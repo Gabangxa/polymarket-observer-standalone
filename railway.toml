@@ -1,0 +1,15 @@
+# railway.toml — API service configuration
+# The bot is a separate Railway service — configure it in the Railway UI:
+#   Source: same repo | Dockerfile: Dockerfile.bot | No healthcheck
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile.api"
+
+[deploy]
+# Push schema before the new API version goes live
+releaseCommand = "pnpm --filter @workspace/db push --force"
+healthcheckPath = "/api/healthz"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
