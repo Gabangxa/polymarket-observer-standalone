@@ -7,11 +7,11 @@ id = "artifacts/api-server"
 id = "artifacts/mockup-sandbox"
 
 [deployment]
-run = ["bash", "-c", "cd bot/polymarket-bot && python scheduler.py"]
+run = ["bash", "scripts/start.sh"]
 deploymentTarget = "vm"
 
 [deployment.postBuild]
-args = ["pnpm", "store", "prune"]
+args = ["bash", "-c", "pnpm --filter @workspace/api-server build && pnpm store prune"]
 env = { "CI" = "true" }
 
 [workflows]
