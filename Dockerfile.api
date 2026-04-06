@@ -1,0 +1,47 @@
+# ── Stage 1: install dependencies ─────────────────────────────────────────────
+FROM node:24-alpine AS deps
+WORKDIR /app
+
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+# Copy manifests first so dependency layer is cached separately from source
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
+
+COPY lib/db/package.json            lib/db/
+COPY lib/api-spec/package.json      lib/api-spec/
+COPY lib/api-zod/package.json       lib/api-zod/
+COPY lib/api-client-react/package.json lib/api-client-react/
+COPY artifacts/api-server/package.json artifacts/api-server/
+
+RUN pnpm install --frozen-lockfile
+
+# ── Stage 2: build ─────────────────────────────────────────────────────────────
+FROM deps AS build
+WORKDIR /app
+
+COPY lib/       lib/
+COPY artifacts/api-server/ artifacts/api-server/
+COPY tsconfig.base.json ./
+
+RUN pnpm --filter @workspace/api-server build
+
+# ── Stage 3: runtime ───────────────────────────────────────────────────────────
+FROM node:24-alpine AS runtime
+WORKDIR /app
+
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+COPY --from=build /app/package.json \
+                  /app/pnpm-workspace.yaml \
+                  /app/pnpm-lock.yaml \
+                  /app/.npmrc \
+                  ./
+
+COPY --from=build /app/node_modules          ./node_modules
+COPY --from=build /app/lib                   ./lib
+COPY --from=build /app/artifacts/api-server  ./artifacts/api-server
+
+ENV NODE_ENV=production
+EXPOSE 8080
+
+CMD ["node", "--enable-source-maps", "artifacts/api-server/dist/index.mjs"]

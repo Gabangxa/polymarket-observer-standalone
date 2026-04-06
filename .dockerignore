@@ -1,0 +1,17 @@
+.git
+.replit
+.replitignore
+node_modules
+**/node_modules
+**/dist
+**/__pycache__
+**/*.pyc
+.env
+.env.*
+!.env.example
+bot/polymarket-bot/data
+bot/polymarket-bot/logs
+bot/polymarket-bot/reports
+bot/polymarket-bot/state
+artifacts/mockup-sandbox
+attached_assets

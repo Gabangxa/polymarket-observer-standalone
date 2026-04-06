@@ -1,7 +1,7 @@
 # db.py — Postgres connection, schema, and query helpers
 #
-# On Replit: DATABASE_URL is injected automatically once you provision
-# the database from Tools → Database in the workspace.
+# Requires DATABASE_URL environment variable:
+#   postgresql://user:pass@host:5432/dbname
 #
 # Schema:
 #   markets    — one row per watched market (upserted each scan)
@@ -26,7 +26,8 @@ def _get_url() -> str:
     if not url:
         raise RuntimeError(
             "DATABASE_URL environment variable not set. "
-            "Provision the database from Tools → Database in your Replit workspace."
+            "Set it to a PostgreSQL connection string: "
+            "postgresql://user:pass@host:5432/dbname"
         )
     return url
 

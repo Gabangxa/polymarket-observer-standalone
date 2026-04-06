@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# start.sh — production entrypoint for Replit VM
-# Runs on every deploy: pushes schema, then starts both services.
+# start.sh — standalone production entrypoint (non-Docker)
+# Pushes schema then starts both services in the same process group.
+# For containerised deployments use docker-compose.yml instead.
 set -euo pipefail
+
+: "${DATABASE_URL:?DATABASE_URL must be set}"
 
 echo "→ Syncing database schema..."
 pnpm --filter @workspace/db push --force
@@ -16,7 +19,7 @@ cd bot/polymarket-bot
 python scheduler.py &
 BOT_PID=$!
 
-# If either process exits, bring down the other and exit non-zero
+# Bring everything down if either process exits
 wait -n $API_PID $BOT_PID
 EXIT_CODE=$?
 kill $API_PID $BOT_PID 2>/dev/null || true
