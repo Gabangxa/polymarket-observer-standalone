@@ -109,8 +109,9 @@ CREATE INDEX IF NOT EXISTS signals_strategy_emitted
 CREATE INDEX IF NOT EXISTS signals_market_emitted
     ON signals (market_id, emitted_at DESC);
 
--- Migration: add outcome column to existing tables
+-- Migrations: add columns to existing tables
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS outcome BOOLEAN;
+ALTER TABLE markets ADD COLUMN IF NOT EXISTS category TEXT;
 """
 
 
@@ -135,12 +136,12 @@ def upsert_markets(watchlist: list[dict]) -> int:
     sql = """
         INSERT INTO markets (
             market_id, condition_id, question, event_title, event_slug,
-            tags, neg_risk, token_ids, outcomes,
+            tags, category, neg_risk, token_ids, outcomes,
             volume_24h, liquidity, end_date, hours_to_close,
             fees_enabled, score, added_at, updated_at
         ) VALUES (
             %(market_id)s, %(condition_id)s, %(question)s, %(event_title)s, %(event_slug)s,
-            %(tags)s, %(neg_risk)s, %(token_ids)s, %(outcomes)s,
+            %(tags)s, %(category)s, %(neg_risk)s, %(token_ids)s, %(outcomes)s,
             %(volume_24h)s, %(liquidity)s, %(end_date)s, %(hours_to_close)s,
             %(fees_enabled)s, %(score)s, NOW(), NOW()
         )
@@ -148,6 +149,7 @@ def upsert_markets(watchlist: list[dict]) -> int:
             question        = EXCLUDED.question,
             event_title     = EXCLUDED.event_title,
             tags            = EXCLUDED.tags,
+            category        = EXCLUDED.category,
             neg_risk        = EXCLUDED.neg_risk,
             token_ids       = EXCLUDED.token_ids,
             volume_24h      = EXCLUDED.volume_24h,
@@ -367,7 +369,7 @@ def get_recent_signals(strategy: str = None, hours: int = 24, limit: int = 100) 
                     FROM signals s
                     LEFT JOIN markets m ON m.market_id = s.market_id
                     WHERE s.strategy = %s
-                      AND s.emitted_at > NOW() - INTERVAL '%s hours'
+                      AND s.emitted_at > NOW() - (%s * INTERVAL '1 hour')
                     ORDER BY s.emitted_at DESC
                     LIMIT %s
                 """, (strategy, hours, limit))
@@ -410,7 +412,7 @@ def get_unresolved_signals(strategy: str = None, older_than_hours: int = 2) -> l
                     LEFT JOIN markets m ON m.market_id = s.market_id
                     WHERE s.resolved = FALSE
                       AND s.strategy = %s
-                      AND s.emitted_at < NOW() - INTERVAL '%s hours'
+                      AND s.emitted_at < NOW() - (%s * INTERVAL '1 hour')
                     ORDER BY s.emitted_at DESC
                     LIMIT 500
                 """, (strategy, older_than_hours))
@@ -420,7 +422,7 @@ def get_unresolved_signals(strategy: str = None, older_than_hours: int = 2) -> l
                     FROM signals s
                     LEFT JOIN markets m ON m.market_id = s.market_id
                     WHERE s.resolved = FALSE
-                      AND s.emitted_at < NOW() - INTERVAL '%s hours'
+                      AND s.emitted_at < NOW() - (%s * INTERVAL '1 hour')
                     ORDER BY s.emitted_at DESC
                     LIMIT 500
                 """, (older_than_hours,))
@@ -448,6 +450,41 @@ def update_signal_outcome(signal_id: int, exit_price: float, pnl: float, outcome
                     outcome    = %s
                 WHERE id = %s
             """, (exit_price, pnl, outcome, signal_id))
+
+
+def get_snapshot_pairs() -> list[dict]:
+    """
+    Return (latest, previous) snapshot pair for each market.
+    Used by odds_shift_engine to detect inter-snapshot price movements.
+    Only returns pairs where both snapshots have a non-null yes_price.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                WITH ranked AS (
+                    SELECT market_id, yes_price, collected_at, spread,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY market_id ORDER BY collected_at DESC
+                           ) AS rn
+                    FROM snapshots
+                )
+                SELECT
+                    latest.market_id,
+                    latest.yes_price   AS latest_price,
+                    latest.collected_at AS latest_at,
+                    latest.spread      AS latest_spread,
+                    prev.yes_price     AS prev_price,
+                    prev.collected_at  AS prev_at,
+                    m.question, m.tags, m.event_slug, m.neg_risk, m.category
+                FROM ranked latest
+                JOIN ranked prev
+                    ON latest.market_id = prev.market_id AND prev.rn = 2
+                JOIN markets m ON m.market_id = latest.market_id
+                WHERE latest.rn = 1
+                  AND latest.yes_price IS NOT NULL
+                  AND prev.yes_price IS NOT NULL
+            """)
+            return [dict(r) for r in cur.fetchall()]
 
 
 def get_db_stats() -> dict:

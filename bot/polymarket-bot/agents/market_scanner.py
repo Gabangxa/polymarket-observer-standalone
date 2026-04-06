@@ -14,6 +14,8 @@ from config import (
     MIN_VOLUME_24H, MIN_LIQUIDITY,
     MIN_HOURS_TO_CLOSE, MAX_WATCHLIST_SIZE,
     PRICE_MIN, PRICE_MAX,
+    VOLUME_SWEET_SPOT_PEAK, VOLUME_SWEET_SPOT_MAX,
+    MICRO_EVENT_KEYWORDS,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,11 +40,41 @@ def _hours_until_close(end_date_str):
     return max(delta.total_seconds() / 3600, 0)
 
 
+def _tag_micro_event(question: str) -> str:
+    """
+    Return the best-matching micro-event category for a market question,
+    or 'other' if nothing matches.
+    """
+    q = (question or "").lower()
+    for category, keywords in MICRO_EVENT_KEYWORDS.items():
+        if any(kw in q for kw in keywords):
+            return category
+    return "other"
+
+
+def _volume_score(vol: float) -> float:
+    """
+    Score volume using a sweetspot curve.
+    - Peaks at VOLUME_SWEET_SPOT_PEAK
+    - Falls linearly above VOLUME_SWEET_SPOT_MAX (whale-distorted mega-markets)
+    - Returns 0.0–0.30
+    """
+    if vol < MIN_VOLUME_24H:
+        return 0.0
+    if vol <= VOLUME_SWEET_SPOT_PEAK:
+        # Ramp up to peak
+        return 0.30 * (vol / VOLUME_SWEET_SPOT_PEAK)
+    if vol <= VOLUME_SWEET_SPOT_MAX:
+        return 0.30
+    # Penalise beyond sweetspot max: reduce score linearly
+    penalty = min(0.15, 0.15 * ((vol - VOLUME_SWEET_SPOT_MAX) / VOLUME_SWEET_SPOT_MAX))
+    return max(0.15, 0.30 - penalty)
+
+
 def _score_market(event, market):
     score = 0.0
     vol = float(market.get("volume24hr") or market.get("volume") or 0)
-    if vol >= MIN_VOLUME_24H:
-        score += min(0.30, 0.30 * (vol / 100_000))
+    score += _volume_score(vol)
     liq = float(market.get("liquidity") or 0)
     if liq >= MIN_LIQUIDITY:
         score += min(0.20, 0.20 * (liq / 50_000))
@@ -123,13 +155,17 @@ def run():
         except Exception:
             outcomes = []
 
+        question = m.get("question") or m.get("title") or ""
+        category = _tag_micro_event(question)
+
         watchlist.append({
             "market_id":      m.get("id"),
             "condition_id":   m.get("conditionId"),
-            "question":       m.get("question") or m.get("title"),
+            "question":       question,
             "event_title":    m.get("_event_title"),
             "event_slug":     m.get("_event_slug"),
             "tags":           m.get("_tags", []),
+            "category":       category,
             "neg_risk":       m.get("_neg_risk", False),
             "token_ids":      token_ids,
             "outcomes":       outcomes,

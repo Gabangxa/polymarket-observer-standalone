@@ -34,6 +34,7 @@ import alerts
 import db
 from agents import market_scanner, data_collector
 from agents import spread_engine, neg_risk_engine, reversion_engine, outcome_tracker
+from agents import odds_shift_engine, hindsight_logger
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -138,6 +139,7 @@ def run_pipeline(skip_scan=False):
         ("spread_engine",    spread_engine),
         ("neg_risk_engine",  neg_risk_engine),
         ("reversion_engine", reversion_engine),
+        ("odds_shift_engine", odds_shift_engine),
     ]:
         try:
             result = agent.run()
@@ -155,6 +157,15 @@ def run_pipeline(skip_scan=False):
     except Exception as e:
         logger.error(f"outcome_tracker crashed: {e}", exc_info=True)
         results["agents"]["outcome_tracker"] = {"error": str(e)}
+
+    # Check if any watched markets fully resolved — update directional signal outcomes
+    try:
+        result = hindsight_logger.run()
+        results["agents"]["hindsight_logger"] = result
+        logger.info(f"hindsight_logger: {result}")
+    except Exception as e:
+        logger.error(f"hindsight_logger crashed: {e}", exc_info=True)
+        results["agents"]["hindsight_logger"] = {"error": str(e)}
 
     results["ended_at"] = datetime.now(timezone.utc).isoformat()
     _update_signal_streaks(results)
@@ -179,7 +190,7 @@ def _print_summary(results):
               f"{co.get('failed',0)} failed")
 
     total = 0
-    for engine in ["spread_engine", "neg_risk_engine", "reversion_engine"]:
+    for engine in ["spread_engine", "neg_risk_engine", "reversion_engine", "odds_shift_engine"]:
         e   = agents.get(engine, {})
         n   = e.get("signals", 0)
         total += n

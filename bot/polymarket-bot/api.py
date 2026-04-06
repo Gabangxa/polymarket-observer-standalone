@@ -76,6 +76,19 @@ def get_tags() -> list[dict]:
     return _get(GAMMA_API, "/tags")
 
 
+def get_market_resolution(market_id: str) -> dict | None:
+    """
+    Fetch a single market's resolution status from the Gamma API.
+    Returns the market dict (includes 'closed' and 'resolutionPrice') or None on error.
+    """
+    try:
+        data = _get(GAMMA_API, "/markets", {"id": market_id, "limit": 1})
+        markets = data if isinstance(data, list) else data.get("markets", [])
+        return markets[0] if markets else None
+    except Exception:
+        return None
+
+
 # ── CLOB API ──────────────────────────────────────────────────────────────────
 
 def get_price(token_id: str, side: str = "buy") -> float | None:

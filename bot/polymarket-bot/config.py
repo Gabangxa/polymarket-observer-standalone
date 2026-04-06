@@ -63,6 +63,34 @@ FEE_RATES = {
 }
 DEFAULT_FEE_RATE = (0.04, 1)  # fallback if category not matched
 
+# ── Odds shift engine ─────────────────────────────────────────────────────────
+ODDS_SHIFT_THRESHOLD    = 0.05   # minimum price delta (5¢) to emit a signal
+ODDS_SHIFT_MIN_HOURS    = 0.25   # minimum elapsed hours between snapshots to compute velocity
+
+# ── EV calculator ─────────────────────────────────────────────────────────────
+EV_MIN_THRESHOLD        = 0.03   # minimum EV (3%) to include annotation
+KELLY_FRACTION          = 0.25   # quarter Kelly — safer, less ruin risk
+
+# ── Market scoring — volume sweetspot ─────────────────────────────────────────
+# Score peaks at VOLUME_SWEET_SPOT_PEAK and falls off above VOLUME_SWEET_SPOT_MAX.
+# Mega-whale markets (billions) are deprioritised — harder to find edge.
+VOLUME_SWEET_SPOT_PEAK  = 100_000    # USD — peak score volume
+VOLUME_SWEET_SPOT_MAX   = 2_000_000  # USD — above this, score starts falling
+
+# ── Micro-event category tagger ───────────────────────────────────────────────
+# Maps category name → list of keywords to match against market question (lowercase).
+# First matching category wins. "other" is the fallback.
+MICRO_EVENT_KEYWORDS: dict[str, list[str]] = {
+    "election_sub":  ["who will", "vp pick", "vice president", "running mate", "nominee", "primary"],
+    "ceasefire":     ["ceasefire", "peace deal", "truce", "end the war", "hostage"],
+    "scandal":       ["resign", "arrested", "charged", "impeach", "scandal", "indicted", "fired"],
+    "crypto_event":  ["bitcoin", " eth ", "ethereum", "crypto", "halving", "etf", "sec approve"],
+    "sports":        ["nba", "nfl", "nhl", "mlb", "fifa", "champion", "super bowl", "world cup", "playoffs"],
+    "corporate":     ["merger", "acquisition", "ipo", "earnings", "bankrupt", "ceo"],
+    "legal":         ["verdict", "ruling", "supreme court", "lawsuit", "trial", "conviction"],
+    "geopolitical":  ["war", "invasion", "sanction", "nato", "missile", "attack", "troops"],
+}
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_RETENTION_DAYS      = 14   # delete log files older than this many days
 ZERO_SIGNAL_STREAK_WARN = 6    # warn after N consecutive zero-signal runs (~30 min at 5 min interval)

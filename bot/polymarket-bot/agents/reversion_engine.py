@@ -10,6 +10,7 @@ from config import (
     REVERSION_MAX_OI,
 )
 import db
+from agents.ev_calculator import size_recommendation
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,15 @@ def _analyse_snapshot(snapshot):
     oi_penalty   = min(oi_value / REVERSION_MAX_OI, 1.0) if REVERSION_MAX_OI > 0 else 0
     signal_score = move["delta"] * (1 - oi_penalty * 0.5)
 
-    return {
+    # EV: q = price before move (expected revert target), p = current distorted price
+    # direction="up"   → bet NO  (price rose, expect fall)
+    # direction="down" → bet YES (price fell, expect rise)
+    q    = move["start_price"]
+    p    = move["end_price"]
+    side = "no" if move["direction"] == "up" else "yes"
+    sizing = size_recommendation(q=q, p=p, side=side)
+
+    signal = {
         "strategy":      "mean_reversion",
         "market_id":     snapshot["market_id"],
         "event_slug":    snapshot.get("event_slug"),
@@ -90,6 +99,9 @@ def _analyse_snapshot(snapshot):
             f"(OI ~${oi_value:,.0f})."
         ),
     }
+    if sizing:
+        signal.update(sizing)
+    return signal
 
 
 def run():
