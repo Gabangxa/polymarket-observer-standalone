@@ -1,7 +1,6 @@
 # railway.toml — API service configuration
 # The bot is a separate Railway service — configure it in the Railway UI:
 
-
 [deploy]
 # Push schema before the new API version goes live
 releaseCommand = "pnpm --filter @workspace/db push --force"
