@@ -1,0 +1,24 @@
+# Stage 1: install dependencies
+FROM node:24-alpine AS deps
+WORKDIR /app
+
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
+COPY artifacts/mockup-sandbox/package.json artifacts/mockup-sandbox/
+
+RUN pnpm install --frozen-lockfile
+
+# Stage 2: build
+FROM deps AS build
+WORKDIR /app
+
+COPY artifacts/mockup-sandbox/ artifacts/mockup-sandbox/
+COPY tsconfig.base.json        ./
+
+RUN pnpm --filter @workspace/mockup-sandbox build
+
+# Stage 3: serve with nginx
+FROM nginx:alpine
+COPY --from=build /app/artifacts/mockup-sandbox/dist /usr/share/nginx/html
+EXPOSE 80
