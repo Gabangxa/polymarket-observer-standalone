@@ -1,0 +1,28 @@
+# Stage 1: install dependencies
+FROM node:24-alpine AS deps
+WORKDIR /app
+
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
+COPY lib/api-client-react/package.json lib/api-client-react/
+COPY lib/api-spec/package.json         lib/api-spec/
+COPY lib/api-zod/package.json          lib/api-zod/
+COPY artifacts/dashboard/package.json  artifacts/dashboard/
+
+RUN pnpm install --frozen-lockfile
+
+# Stage 2: build
+FROM deps AS build
+WORKDIR /app
+
+COPY lib/               lib/
+COPY artifacts/dashboard/ artifacts/dashboard/
+COPY tsconfig.base.json   ./
+
+RUN pnpm --filter @workspace/dashboard build
+
+# Stage 3: serve with nginx
+FROM nginx:alpine
+COPY --from=build /app/artifacts/dashboard/dist /usr/share/nginx/html
+EXPOSE 80
