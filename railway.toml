@@ -4,7 +4,6 @@
 [deploy]
 # Push schema before the new API version goes live
 releaseCommand = "pnpm --filter @workspace/db push --force"
-healthcheckPath = "/api/healthz"
 healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
