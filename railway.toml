@@ -3,7 +3,7 @@
 
 [deploy]
 # Push schema before the new API version goes live
-releaseCommand = "pnpm --filter @workspace/db push --force"
+releaseCommand = "corepack enable && corepack prepare pnpm@latest --activate && pnpm --filter @workspace/db push --force"
 healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
