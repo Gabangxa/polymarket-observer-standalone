@@ -1,5 +1,8 @@
 # railway.toml — API service configuration
-# The bot is a separate Railway service — configure it in the Railway UI:
+# The bot is a separate Railway service — configure it in the Railway UI.
+
+[build]
+dockerfilePath = "Dockerfile.api"
 
 [deploy]
 # Push schema before the new API version goes live
