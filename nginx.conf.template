@@ -22,7 +22,8 @@ server {
     # 502 instead of crashing nginx at boot.
     location /api/ {
         set $api_upstream "${API_SERVER_URL}";
-        proxy_pass $api_upstream/api/;
+        rewrite ^/api/(.*)$ /api/$1 break;
+        proxy_pass $api_upstream;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
