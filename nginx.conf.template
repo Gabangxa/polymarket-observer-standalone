@@ -3,16 +3,33 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
-    # Proxy API calls to the api-server
+    # Use Railway's internal resolver so .railway.internal names
+    # are resolved at request time, not at nginx startup.
+    resolver 8.8.8.8 1.1.1.1 valid=10s ipv6=on;
+    resolver_timeout 5s;
+
+    # Local healthcheck — does NOT depend on the upstream API.
+    # Point Railway's healthcheck path at /healthz instead of /.
+    location = /healthz {
+        access_log off;
+        add_header Content-Type text/plain;
+        return 200 "ok\n";
+    }
+
+    # Proxy API calls to the api-server.
+    # Using a variable in proxy_pass forces lazy DNS resolution
+    # via the resolver above, so a missing/down upstream will
+    # 502 instead of crashing nginx at boot.
     location /api/ {
-        proxy_pass ${API_SERVER_URL}/api/;
+        set $api_upstream "${API_SERVER_URL}";
+        proxy_pass $api_upstream/api/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # SPA fallback - all other routes serve index.html
+    # SPA fallback — all other routes serve index.html
     location / {
         try_files $uri $uri/ /index.html;
     }
