@@ -3,9 +3,9 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
-    #Use Railway's internal resolver so .railway.internal names
+    # Use Railway's internal resolver so .railway.internal names
     # are resolved at request time, not at nginx startup.
-    resolver 8.8.8.8 1.1.1.1 valid=10s ipv6=on;
+    resolver ${DNS_RESOLVER} valid=30s;
     resolver_timeout 5s;
 
     # Local healthcheck — does NOT depend on the upstream API.
