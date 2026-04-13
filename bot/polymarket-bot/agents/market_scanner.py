@@ -12,7 +12,7 @@ import db
 from config import (
     SCANNER_LIMIT, SCANNER_PAGES,
     MIN_VOLUME_24H, MIN_LIQUIDITY,
-    MIN_HOURS_TO_CLOSE, MAX_WATCHLIST_SIZE,
+    MIN_HOURS_TO_CLOSE, MAX_HOURS_TO_CLOSE, MAX_WATCHLIST_SIZE,
     PRICE_MIN, PRICE_MAX,
     VOLUME_SWEET_SPOT_PEAK, VOLUME_SWEET_SPOT_MAX,
     MICRO_EVENT_KEYWORDS,
@@ -79,10 +79,8 @@ def _score_market(event, market):
     if liq >= MIN_LIQUIDITY:
         score += min(0.20, 0.20 * (liq / 50_000))
     hours = _hours_until_close(market.get("endDate") or event.get("endDate"))
-    if 48 <= hours <= 720:
+    if MIN_HOURS_TO_CLOSE <= hours <= MAX_HOURS_TO_CLOSE:
         score += 0.20
-    elif hours > 720:
-        score += 0.10
     try:
         prices = [float(p) for p in json.loads(market.get("outcomePrices") or "[]")]
     except Exception:
@@ -134,7 +132,7 @@ def run():
         if m.get("enableOrderBook")
         and float(m.get("volume24hr") or m.get("volume") or 0) >= MIN_VOLUME_24H
         and float(m.get("liquidity") or 0) >= MIN_LIQUIDITY
-        and _hours_until_close(m.get("endDate")) >= MIN_HOURS_TO_CLOSE
+        and MIN_HOURS_TO_CLOSE <= _hours_until_close(m.get("endDate")) <= MAX_HOURS_TO_CLOSE
     ]
     logger.info(f"After filter: {len(filtered)}")
 

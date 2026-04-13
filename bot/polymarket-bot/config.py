@@ -10,10 +10,11 @@ POLL_INTERVAL_SECONDS = 300   # 5 minutes between full pipeline runs
 
 # ── Market scanner filters ────────────────────────────────────────────────────
 SCANNER_LIMIT           = 100   # markets fetched per page from Gamma
-SCANNER_PAGES           = 3     # pages to scan (= up to 300 markets)
+SCANNER_PAGES           = 5     # pages to scan (= up to 500 markets); increased to offset tighter time filter
 MIN_VOLUME_24H          = 5_000  # USD — ignore micro-markets
 MIN_LIQUIDITY           = 2_000  # USD — need enough depth to matter
 MIN_HOURS_TO_CLOSE      = 24    # skip markets expiring within 24h
+MAX_HOURS_TO_CLOSE      = 168   # skip markets expiring beyond 7 days — laser focus on short-resolution markets
 MAX_WATCHLIST_SIZE      = 20    # keep the watchlist focused
 
 # Price range filter for strategy relevance:
