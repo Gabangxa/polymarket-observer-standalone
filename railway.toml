@@ -5,4 +5,4 @@
 healthcheckTimeout      = 30
 restartPolicyType       = "ON_FAILURE"
 restartPolicyMaxRetries = 3
-preDeployCommand        = ["node dist/migrate.mjs"]
+preDeployCommand        = ["node artifacts/api-server/dist/migrate.mjs"]
