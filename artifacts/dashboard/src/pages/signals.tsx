@@ -8,9 +8,10 @@ import { Link } from "wouter";
 
 export default function Signals() {
   const [strategyFilter, setStrategyFilter] = useState<string>("");
-  const { data, isLoading } = useLiveSignals({ 
+  const { data, isLoading } = useLiveSignals({
     limit: 200,
-    strategy: strategyFilter || undefined 
+    hours: 168,
+    strategy: strategyFilter || undefined
   });
 
   const strategies: { value: string; label: string }[] = [
@@ -36,7 +37,7 @@ export default function Signals() {
             <Zap className="text-primary" /> Strategy Signals
           </h2>
           <p className="text-sm text-muted-foreground font-mono mt-1">
-            Algorithmic trade opportunities from the last 24 hours
+            Algorithmic trade opportunities from the last 7 days
           </p>
         </div>
         
