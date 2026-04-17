@@ -63,9 +63,9 @@ def _analyse_snapshot(snapshot):
         "net_spread":     round(net_spread, 4),
         "fee_multiple":   round(fee_multiple, 2),
         "signal_score":   round(signal_score, 4),
-        "note": (
-            f"Spread {float(spread):.4f} is {fee_multiple:.1f}x the round-trip fee. "
-            f"Net after fees: {net_spread:.4f}/share."
+        "trigger": (
+            f"Spread {float(spread):.4f} is {fee_multiple:.1f}× the round-trip fee "
+            f"(threshold {SPREAD_FEE_MULTIPLE}×). Net edge after fees: {net_spread:.4f}/share."
         ),
     }
 

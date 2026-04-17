@@ -82,7 +82,9 @@ CREATE TABLE IF NOT EXISTS snapshots (
     price_history   JSONB,
     top_holders     JSONB,
     recent_trades   JSONB,
-    errors          TEXT[]
+    errors          TEXT[],
+    yes_ask         NUMERIC,
+    no_ask          NUMERIC
 );
 
 CREATE INDEX IF NOT EXISTS snapshots_market_collected
@@ -113,6 +115,8 @@ CREATE INDEX IF NOT EXISTS signals_market_emitted
 -- Migrations: add columns to existing tables
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS outcome BOOLEAN;
 ALTER TABLE markets ADD COLUMN IF NOT EXISTS category TEXT;
+ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS yes_ask NUMERIC;
+ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS no_ask NUMERIC;
 """
 
 
@@ -187,11 +191,13 @@ def insert_snapshot(snapshot: dict) -> int:
         INSERT INTO snapshots (
             market_id, collected_at,
             yes_price, no_price, spread, midpoint, fee_rate_bps,
-            open_interest, price_history, top_holders, recent_trades, errors
+            open_interest, price_history, top_holders, recent_trades, errors,
+            yes_ask, no_ask
         ) VALUES (
             %(market_id)s, %(collected_at)s,
             %(yes_price)s, %(no_price)s, %(spread)s, %(midpoint)s, %(fee_rate_bps)s,
-            %(open_interest)s, %(price_history)s, %(top_holders)s, %(recent_trades)s, %(errors)s
+            %(open_interest)s, %(price_history)s, %(top_holders)s, %(recent_trades)s, %(errors)s,
+            %(yes_ask)s, %(no_ask)s
         )
         RETURNING id
     """
@@ -357,7 +363,17 @@ def insert_signal(signal: dict) -> int:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, row)
-            return cur.fetchone()["id"]
+            row_id = cur.fetchone()["id"]
+
+    from config import SIGNAL_WEBHOOK_URL
+    if SIGNAL_WEBHOOK_URL:
+        try:
+            from agents.webhook_dispatcher import fire_signal
+            fire_signal(strategy, market_id or "", dict(signal))
+        except Exception as e:
+            logger.warning(f"Webhook fire failed: {e}")
+
+    return row_id
 
 
 def get_recent_signals(strategy: str = None, hours: int = 24, limit: int = 100) -> list[dict]:

@@ -26,6 +26,8 @@ export const snapshotsTable = pgTable(
     topHolders: jsonb("top_holders"),
     recentTrades: jsonb("recent_trades"),
     errors: text("errors").array(),
+    yesAsk: numeric("yes_ask"),
+    noAsk: numeric("no_ask"),
   },
   (t) => [
     index("snapshots_market_collected").on(t.marketId, t.collectedAt),

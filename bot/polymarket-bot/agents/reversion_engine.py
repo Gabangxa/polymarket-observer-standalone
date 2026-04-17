@@ -93,10 +93,11 @@ def _analyse_snapshot(snapshot):
         "price_move":    move,
         "open_interest": oi_value,
         "signal_score":  round(signal_score, 4),
-        "note": (
-            f"Price moved {move['delta']:.4f} ({move['direction']}) "
-            f"over {move['hours_elapsed']:.1f}h in thin market "
-            f"(OI ~${oi_value:,.0f})."
+        "trigger": (
+            f"Price moved {move['delta']:.4f} {move['direction']} "
+            f"{move['start_price']:.4f} → {move['end_price']:.4f} "
+            f"over {move['hours_elapsed']:.1f}h "
+            f"(threshold {REVERSION_PRICE_MOVE_THRESHOLD}, OI ~${oi_value:,.0f})."
         ),
     }
     if sizing:

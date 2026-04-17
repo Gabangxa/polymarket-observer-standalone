@@ -67,12 +67,15 @@ def _analyse_pair(row: dict) -> dict | None:
         "hours_elapsed":  round(hours_elapsed, 2),
         "velocity":       velocity,
         "signal_score":   signal_score,
-        "note": (
-            f"Price moved {delta:+.4f} ({direction}) "
+        "trigger": (
+            f"Price shifted {delta:+.4f} ({direction}) "
+            f"{prev_price:.4f} → {latest_price:.4f} "
             f"over {hours_elapsed:.1f}h "
-            f"(velocity: {velocity:.4f}/h)."
+            f"(threshold {ODDS_SHIFT_THRESHOLD}, velocity: {velocity:.4f}/h)."
             if velocity else
-            f"Price moved {delta:+.4f} ({direction})."
+            f"Price shifted {delta:+.4f} ({direction}) "
+            f"{prev_price:.4f} → {latest_price:.4f} "
+            f"(threshold {ODDS_SHIFT_THRESHOLD})."
         ),
     }
 

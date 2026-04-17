@@ -16,7 +16,8 @@ FIDELITY_MAP = {"1m": 1, "5m": 5, "1h": 60, "1d": 1440}
 def _collect_market_snapshot(market):
     market_id = market["market_id"]
     token_ids = market.get("token_ids") or []
-    yes_token = token_ids[0] if token_ids else None
+    yes_token = token_ids[0] if token_ids else None          # YES token (index 0)
+    no_token  = token_ids[1] if len(token_ids) > 1 else None # NO token (index 1)
 
     snapshot = {
         "market_id":     market_id,
@@ -31,11 +32,32 @@ def _collect_market_snapshot(market):
         "top_holders":   [],
         "recent_trades": [],
         "errors":        [],
+        "yes_ask":       None,
+        "no_ask":        None,
     }
 
     if not yes_token:
         snapshot["errors"].append("no token_ids")
         return snapshot
+
+    # Fetch YES ask price (price to buy a YES share)
+    try:
+        yes_ask = api.get_price(yes_token, side="buy")
+        if yes_ask is not None and yes_ask > 0:
+            snapshot["yes_ask"] = yes_ask
+    except Exception as e:
+        snapshot["errors"].append(f"yes_ask: {e}")
+        logger.warning(f"  yes_ask failed for {market_id}: {e}")
+
+    # Fetch NO ask price (price to buy a NO share)
+    try:
+        if no_token:
+            no_ask = api.get_price(no_token, side="buy")
+            if no_ask is not None and no_ask > 0:
+                snapshot["no_ask"] = no_ask
+    except Exception as e:
+        snapshot["errors"].append(f"no_ask: {e}")
+        logger.warning(f"  no_ask failed for {market_id}: {e}")
 
     # /spread only returns {"spread": "value"} — no longer includes mid or sell
     try:

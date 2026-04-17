@@ -1,4 +1,5 @@
 # config.py — single source of truth for all constants
+import os
 
 # ── API base URLs ──────────────────────────────────────────────────────────────
 GAMMA_API  = "https://gamma-api.polymarket.com"
@@ -91,6 +92,20 @@ MICRO_EVENT_KEYWORDS: dict[str, list[str]] = {
     "legal":         ["verdict", "ruling", "supreme court", "lawsuit", "trial", "conviction"],
     "geopolitical":  ["war", "invasion", "sanction", "nato", "missile", "attack", "troops"],
 }
+
+# ── Micro-spread engine ───────────────────────────────────────────────────────
+MICRO_SPREAD_THRESHOLD  = 0.04   # minimum spread to emit a micro-spread signal
+
+# ── Tail-yield engine ─────────────────────────────────────────────────────────
+YIELD_MIN_PRICE         = 0.95   # minimum YES price eligible for yield harvest
+YIELD_HOURS_TO_EXPIRY   = 48     # skip markets expiring beyond this many hours
+
+# ── Binary arb engine ─────────────────────────────────────────────────────────
+ARB_THRESHOLD           = 0.98   # fire when yes_ask + no_ask < this value
+
+# ── Webhook dispatcher ────────────────────────────────────────────────────────
+# Set SIGNAL_WEBHOOK_URL in Railway UI (bot service variables) — never hardcode
+SIGNAL_WEBHOOK_URL      = os.environ.get("SIGNAL_WEBHOOK_URL", "")
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_RETENTION_DAYS      = 14   # delete log files older than this many days

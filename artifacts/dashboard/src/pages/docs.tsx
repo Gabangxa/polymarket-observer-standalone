@@ -224,7 +224,7 @@ export default function Docs() {
 
       {/* Strategies */}
       <div>
-        <SectionHeading><Zap size={18} className="text-primary" /> The three strategy engines</SectionHeading>
+        <SectionHeading><Zap size={18} className="text-primary" /> Strategy engines</SectionHeading>
         <div className="space-y-4">
 
           <div className="terminal-panel p-6 border-l-4 border-l-yellow-500/60">
@@ -283,6 +283,66 @@ export default function Docs() {
             </div>
             <p className="text-sm text-muted-foreground mt-3">
               <span className="text-foreground font-medium">In plain terms:</span> if a $50k market swings from $0.30 to $0.65 in two hours for no apparent reason, it's likely noise — bet on it returning toward $0.30.
+            </p>
+          </div>
+
+          <div className="terminal-panel p-6 border-l-4 border-l-green-500/60">
+            <div className="flex items-center gap-2 mb-3">
+              <Badge className="bg-green-500/10 text-green-400 border-green-500/20">micro_spread_scalp</Badge>
+              <span className="text-xs font-mono text-muted-foreground">Resolution window: 1 hour</span>
+            </div>
+            <p className="text-sm text-muted-foreground leading-relaxed mb-3">
+              When a market's bid-ask spread is wide enough to be exploited as a market maker, this engine models the optimal placement for both sides. Unlike the spread harvesting engine which focuses on fee coverage, micro-spread targets markets where the spread itself is large relative to typical tick size — creating short-term scalping opportunities.
+            </p>
+            <div className="bg-muted/30 rounded p-3 font-mono text-xs space-y-1">
+              <div className="text-muted-foreground">Signal fires when:</div>
+              <div><span className="text-success">spread</span> ≥ <span className="text-primary">MICRO_SPREAD_THRESHOLD (0.04)</span></div>
+              <div className="text-muted-foreground mt-2">Score = spread / 0.10 (capped at 1.0)</div>
+              <div className="text-muted-foreground">Metadata: best_bid, best_ask, optimal_bid, optimal_ask, potential_capture</div>
+            </div>
+            <p className="text-sm text-muted-foreground mt-3">
+              <span className="text-foreground font-medium">Expected frequency:</span> moderate — fires whenever the spread crosses 4¢, which happens regularly in active markets.
+            </p>
+          </div>
+
+          <div className="terminal-panel p-6 border-l-4 border-l-orange-500/60">
+            <div className="flex items-center gap-2 mb-3">
+              <Badge className="bg-orange-500/10 text-orange-400 border-orange-500/20">tail_yield_harvest</Badge>
+              <span className="text-xs font-mono text-muted-foreground">Resolution window: at expiry</span>
+            </div>
+            <p className="text-sm text-muted-foreground leading-relaxed mb-3">
+              Near-certain outcomes approaching expiry are underpriced relative to their implied yield. When a YES price is ≥ 95¢ but less than 99¢ and the market closes within 48 hours, buying YES and holding to resolution provides a risk-adjusted yield comparable to short-term fixed income — but in a binary contract form.
+            </p>
+            <div className="bg-muted/30 rounded p-3 font-mono text-xs space-y-1">
+              <div className="text-muted-foreground">Signal fires when:</div>
+              <div><span className="text-success">yes_price</span> ≥ <span className="text-primary">YIELD_MIN_PRICE (0.95)</span> AND yes_price &lt; 0.99</div>
+              <div><span className="text-success">hours_to_close</span> ≤ <span className="text-primary">YIELD_HOURS_TO_EXPIRY (48)</span></div>
+              <div className="text-muted-foreground mt-2">yield_pct = ((1 / yes_price) − 1) × 100</div>
+              <div className="text-muted-foreground">Score = yield_pct / 5.0 (5% yield = 1.0 score)</div>
+              <div className="text-muted-foreground">Metadata: hours_remaining, current_price, yield_percentage</div>
+            </div>
+            <p className="text-sm text-muted-foreground mt-3">
+              <span className="text-foreground font-medium">Expected frequency:</span> moderate — depends on how many markets are in the final 48 hours with high YES prices.
+            </p>
+          </div>
+
+          <div className="terminal-panel p-6 border-l-4 border-l-red-500/60">
+            <div className="flex items-center gap-2 mb-3">
+              <Badge className="bg-red-500/10 text-red-400 border-red-500/20">binary_arb</Badge>
+              <span className="text-xs font-mono text-muted-foreground">Resolution window: immediate</span>
+            </div>
+            <p className="text-sm text-muted-foreground leading-relaxed mb-3">
+              On a binary market, YES and NO are complementary: exactly one resolves to $1. If you can buy both YES and NO for a combined cost below $1, you lock in a guaranteed profit regardless of outcome. This engine monitors ask prices for both tokens and fires when their sum falls below the arb threshold.
+            </p>
+            <div className="bg-muted/30 rounded p-3 font-mono text-xs space-y-1">
+              <div className="text-muted-foreground">Signal fires when:</div>
+              <div><span className="text-success">yes_ask + no_ask</span> &lt; <span className="text-primary">ARB_THRESHOLD (0.98)</span></div>
+              <div className="text-muted-foreground mt-2">guaranteed_profit = 1.00 − (yes_ask + no_ask)</div>
+              <div className="text-muted-foreground">Score = guaranteed_profit / 0.05 (5¢ profit = 1.0 score)</div>
+              <div className="text-muted-foreground">Metadata: buy_yes_at, buy_no_at, total_cost, guaranteed_profit</div>
+            </div>
+            <p className="text-sm text-muted-foreground mt-3">
+              <span className="text-foreground font-medium">Expected frequency:</span> rare — genuine binary arb is quickly eliminated by market participants. Signals here likely reflect data staleness or thin liquidity rather than exploitable opportunities.
             </p>
           </div>
 

@@ -62,10 +62,10 @@ def _analyse_event(event_slug, snapshots):
             }
             for q, p, mid in sorted(prices, key=lambda x: x[1], reverse=True)
         ],
-        "note": (
-            f"Sum of {n} outcome prices = {total:.4f}. "
-            f"Over-round of {overround*100:.2f}c. "
-            f"Selling NO on all outcomes yields a theoretical edge."
+        "trigger": (
+            f"Sum of {n} YES prices = {total:.4f} "
+            f"(threshold {NEG_RISK_OVERROUND_THRESHOLD}). "
+            f"Over-round: {overround*100:.2f}¢ — sell NO on all {n} outcomes."
         ),
     }
 
