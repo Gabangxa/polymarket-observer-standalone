@@ -239,7 +239,15 @@ def insert_snapshot(snapshot: dict) -> int:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, row)
-            return cur.fetchone()["id"]
+            row_id = cur.fetchone()["id"]
+
+    import nats_bus
+    nats_bus.publish(
+        f"pm.snapshots.{snapshot['market_id']}",
+        {k: v for k, v in snapshot.items()
+         if k not in ("price_history", "top_holders", "recent_trades")},
+    )
+    return row_id
 
 
 def get_latest_snapshots(limit: int = 100) -> list[dict]:
@@ -372,6 +380,12 @@ def insert_signal(signal: dict) -> int:
             fire_signal(strategy, market_id or "", dict(signal))
         except Exception as e:
             logger.warning(f"Webhook fire failed: {e}")
+
+    import nats_bus
+    nats_bus.publish(
+        f"pm.signals.{strategy}.{market_id or 'unknown'}",
+        dict(signal),
+    )
 
     return row_id
 

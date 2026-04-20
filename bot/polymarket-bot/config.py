@@ -107,6 +107,12 @@ ARB_THRESHOLD           = 0.98   # fire when yes_ask + no_ask < this value
 # Set SIGNAL_WEBHOOK_URL in Railway UI (bot service variables) — never hardcode
 SIGNAL_WEBHOOK_URL      = os.environ.get("SIGNAL_WEBHOOK_URL", "")
 
+# ── NATS messaging bus ────────────────────────────────────────────────────────
+# Set NATS_URL in Railway UI. Leave blank to run without NATS (all publishes are no-ops).
+# EXECUTION_MIN_SCORE: minimum signal_score for signal_router to forward to pm.execution.queue
+NATS_URL                = os.environ.get("NATS_URL", "")
+EXECUTION_MIN_SCORE     = float(os.environ.get("EXECUTION_MIN_SCORE", "0.75"))
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_RETENTION_DAYS      = 14   # delete log files older than this many days
 ZERO_SIGNAL_STREAK_WARN = 6    # warn after N consecutive zero-signal runs (~30 min at 5 min interval)

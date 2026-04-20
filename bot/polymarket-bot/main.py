@@ -33,8 +33,8 @@ logger = logging.getLogger("main")
 import alerts
 import db
 from agents import market_scanner, data_collector
-from agents import spread_engine, neg_risk_engine, reversion_engine, outcome_tracker
-from agents import odds_shift_engine, hindsight_logger
+from agents import spread_engine, neg_risk_engine, outcome_tracker
+from agents import hindsight_logger
 from agents import micro_spread_engine, tail_yield_engine, binary_arb_engine
 
 
@@ -71,7 +71,7 @@ def _update_signal_streaks(results: dict) -> None:
     now = datetime.now(timezone.utc).isoformat()
     agents = results.get("agents", {})
 
-    for engine in ("spread_engine", "neg_risk_engine", "reversion_engine",
+    for engine in ("spread_engine", "neg_risk_engine",
                    "micro_spread_engine", "tail_yield_engine", "binary_arb_engine"):
         result = agents.get(engine, {})
         if "error" in result:
@@ -140,8 +140,6 @@ def run_pipeline(skip_scan=False):
     for name, agent in [
         ("spread_engine",       spread_engine),
         ("neg_risk_engine",     neg_risk_engine),
-        ("reversion_engine",    reversion_engine),
-        ("odds_shift_engine",   odds_shift_engine),
         ("micro_spread_engine", micro_spread_engine),
         ("tail_yield_engine",   tail_yield_engine),
         ("binary_arb_engine",   binary_arb_engine),
@@ -195,7 +193,7 @@ def _print_summary(results):
               f"{co.get('failed',0)} failed")
 
     total = 0
-    for engine in ["spread_engine", "neg_risk_engine", "reversion_engine", "odds_shift_engine",
+    for engine in ["spread_engine", "neg_risk_engine",
                    "micro_spread_engine", "tail_yield_engine", "binary_arb_engine"]:
         e   = agents.get(engine, {})
         n   = e.get("signals", 0)
