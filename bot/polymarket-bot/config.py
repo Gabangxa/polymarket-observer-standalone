@@ -14,7 +14,8 @@ SCANNER_LIMIT           = 100   # markets fetched per page from Gamma
 SCANNER_PAGES           = 5     # pages to scan (= up to 500 markets); increased to offset tighter time filter
 MIN_VOLUME_24H          = 5_000  # USD — ignore micro-markets
 MIN_LIQUIDITY           = 2_000  # USD — need enough depth to matter
-MIN_HOURS_TO_CLOSE      = 24    # skip markets expiring within 24h
+MIN_TOP_BOOK_DEPTH      = 50    # USD — minimum size available at the best bid/ask to consider the spread/arb valid
+MIN_HOURS_TO_CLOSE      = 1      # Allow scanning right up to the final hours
 MAX_HOURS_TO_CLOSE      = 168   # skip markets expiring beyond 7 days — laser focus on short-resolution markets
 MAX_WATCHLIST_SIZE      = 10    # keep the watchlist focused
 
@@ -39,10 +40,11 @@ SPREAD_FEE_MULTIPLE     = 2.0    # spread must be at least 2× the fee to be int
 SPREAD_MIN_SIGNAL_SCORE = 0.6    # 0–1 score threshold to include in report
 
 # ── Neg-risk engine thresholds ────────────────────────────────────────────────
-# In a neg-risk event, sum(all outcome prices) should be ≤ 1.0
-# When it exceeds this, there's a theoretical risk-free trade
-NEG_RISK_OVERROUND_THRESHOLD = 1.02   # flag when sum > 1.02 (2¢ of slack)
-NEG_RISK_MIN_OUTCOMES        = 3      # only interesting with 3+ outcomes
+# TAKER: Buy all outcomes instantly. Sum of ASKS must be < 1.0 (after fees).
+NEG_RISK_TAKER_THRESHOLD = 0.98      # flag when sum(asks) < 0.98
+# MAKER: Sell all outcomes. Sum of BIDS must be > 1.0 (after fees).
+NEG_RISK_MAKER_THRESHOLD = 1.02      # flag when sum(bids) > 1.02
+NEG_RISK_MIN_OUTCOMES    = 3         # only interesting with 3+ outcomes
 
 # ── Reversion engine thresholds ──────────────────────────────────────────────
 REVERSION_PRICE_MOVE_THRESHOLD = 0.08   # 8 cent move in a short window
@@ -101,7 +103,9 @@ YIELD_MIN_PRICE         = 0.95   # minimum YES price eligible for yield harvest
 YIELD_HOURS_TO_EXPIRY   = 48     # skip markets expiring beyond this many hours
 
 # ── Binary arb engine ─────────────────────────────────────────────────────────
-ARB_THRESHOLD           = 0.98   # fire when yes_ask + no_ask < this value
+ARB_MIN_NET_MARGIN      = 0.015  # Require a guaranteed 1.5% net profit after category fees
+# Remove the static ARB_THRESHOLD. Let the engine calculate: 
+# Target Threshold = 1.0 - (FEE_RATES[category][0] + ARB_MIN_NET_MARGIN)
 
 # ── Webhook dispatcher ────────────────────────────────────────────────────────
 # Set SIGNAL_WEBHOOK_URL in Railway UI (bot service variables) — never hardcode
