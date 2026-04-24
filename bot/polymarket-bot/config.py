@@ -7,7 +7,7 @@ CLOB_API   = "https://clob.polymarket.com"
 DATA_API   = "https://data-api.polymarket.com"
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
-POLL_INTERVAL_SECONDS = 300   # 5 minutes between full pipeline runs
+POLL_INTERVAL_SECONDS = 30   # 5 minutes between full pipeline runs
 
 # ── Market scanner filters ────────────────────────────────────────────────────
 SCANNER_LIMIT           = 100   # markets fetched per page from Gamma
