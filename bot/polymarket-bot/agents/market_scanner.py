@@ -16,6 +16,8 @@ from config import (
     PRICE_MIN, PRICE_MAX,
     VOLUME_SWEET_SPOT_PEAK, VOLUME_SWEET_SPOT_MAX,
     MICRO_EVENT_KEYWORDS,
+    FEE_RATES, DEFAULT_FEE_RATE,
+    YIELD_HOURS_TO_EXPIRY, YIELD_MIN_PRICE,
 )
 
 logger = logging.getLogger(__name__)
@@ -71,16 +73,28 @@ def _volume_score(vol: float) -> float:
     return max(0.15, 0.30 - penalty)
 
 
+def _resolve_fee_rate(tags: list) -> float:
+    """Return the fee rate for the first tag that matches a FEE_RATES entry."""
+    for tag in tags:
+        for category, params in FEE_RATES.items():
+            if category in tag.lower():
+                return params[0]
+    return DEFAULT_FEE_RATE[0]
+
+
 def _score_market(event, market):
     score = 0.0
     vol = float(market.get("volume24hr") or market.get("volume") or 0)
     score += _volume_score(vol)
+
     liq = float(market.get("liquidity") or 0)
     if liq >= MIN_LIQUIDITY:
         score += min(0.20, 0.20 * (liq / 50_000))
+
     hours = _hours_until_close(market.get("endDate") or event.get("endDate"))
     if MIN_HOURS_TO_CLOSE <= hours <= MAX_HOURS_TO_CLOSE:
         score += 0.20
+
     try:
         prices = [float(p) for p in json.loads(market.get("outcomePrices") or "[]")]
     except Exception:
@@ -89,10 +103,24 @@ def _score_market(event, market):
         mid = prices[0]
         if PRICE_MIN <= mid <= PRICE_MAX:
             score += 0.15 * (1 - abs(mid - 0.5) / 0.5)
+
     if event.get("negRisk") or market.get("negRisk"):
         score += 0.15
+
     if market.get("enableOrderBook"):
         score += 0.10
+
+    # Fee component: geopolitics (0% fee) scores full 0.15; crypto (7.2%) scores ~0.04.
+    # Capped at 0 — we don't penalise high-fee markets, just don't reward them.
+    fee_rate = _resolve_fee_rate(market.get("_tags", []))
+    score += max(0.0, (1.0 - fee_rate / 0.10) * 0.15)
+
+    # Tail-yield proximity: only boost markets that are near expiry AND near certainty.
+    # Keeps the rest of the watchlist from being dominated by near-expiry markets.
+    if prices and hours <= YIELD_HOURS_TO_EXPIRY and prices[0] >= YIELD_MIN_PRICE:
+        time_factor = 1.0 - (hours / YIELD_HOURS_TO_EXPIRY)
+        score += time_factor * 0.10
+
     return min(score, 1.0)
 
 
