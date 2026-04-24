@@ -3,7 +3,7 @@
 # Reads neg-risk snapshots grouped by event, writes signals to DB.
 
 import logging
-from config import NEG_RISK_OVERROUND_THRESHOLD, NEG_RISK_MIN_OUTCOMES
+from config import NEG_RISK_MAKER_THRESHOLD, NEG_RISK_MIN_OUTCOMES
 import db
 from agents.ev_calculator import yes_ev
 
@@ -24,7 +24,7 @@ def _analyse_event(event_slug, snapshots):
         return None
 
     total = sum(p for _, p, _ in prices)
-    if total <= NEG_RISK_OVERROUND_THRESHOLD:
+    if total <= NEG_RISK_MAKER_THRESHOLD:
         return None
 
     overround = total - 1.0
@@ -64,7 +64,7 @@ def _analyse_event(event_slug, snapshots):
         ],
         "trigger": (
             f"Sum of {n} YES prices = {total:.4f} "
-            f"(threshold {NEG_RISK_OVERROUND_THRESHOLD}). "
+            f"(threshold {NEG_RISK_MAKER_THRESHOLD}). "
             f"Over-round: {overround*100:.2f}¢ — sell NO on all {n} outcomes."
         ),
     }
