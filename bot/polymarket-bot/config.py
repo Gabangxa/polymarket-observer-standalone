@@ -30,6 +30,9 @@ PRICE_MAX = 0.95
 PRICE_HISTORY_FIDELITY  = "1h"   # interval for price history (1m, 5m, 1h, 1d)
 PRICE_HISTORY_LIMIT     = 168    # data points to fetch (168 × 1h = 7 days)
 SNAPSHOT_RETENTION_DAYS = 30     # snapshots older than this are eligible for cleanup
+# Deep collection (price_history, open_interest, top_holders, recent_trades) runs every
+# Nth pipeline tick. Light fields (midpoint, spread, yes/no ask, fee) run every tick.
+DEEP_COLLECTION_INTERVAL = 6     # 1 deep run per 6 ticks ≈ every 3 min at 30s poll
 
 # ── Spread engine thresholds ──────────────────────────────────────────────────
 # Fee formula: fee = C × p × feeRate × (p × (1-p))^exponent

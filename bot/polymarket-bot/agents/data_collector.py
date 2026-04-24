@@ -1,19 +1,49 @@
 # agents/data_collector.py
 # Phase 2: Collect a full data snapshot for each watched market.
 # Output: inserted into the snapshots table in Postgres.
+#
+# Collection modes:
+#   light (every run)  — midpoint, yes/no ask, spread, fee_rate_bps
+#   deep  (every Nth)  — + price_history, open_interest, top_holders, recent_trades
+#
+# DEEP_COLLECTION_INTERVAL controls the cadence. Counter is persisted in
+# state/deep_collection_counter.json so it survives restarts.
 
+import json
 import logging
+import os
 from datetime import datetime, timezone
 
 import api
 import db
-from config import PRICE_HISTORY_FIDELITY, PRICE_HISTORY_LIMIT
+from config import (
+    PRICE_HISTORY_FIDELITY,
+    PRICE_HISTORY_LIMIT,
+    DEEP_COLLECTION_INTERVAL,
+    STATE_DIR,
+)
 
 logger = logging.getLogger(__name__)
 FIDELITY_MAP = {"1m": 1, "5m": 5, "1h": 60, "1d": 1440}
 
+_COUNTER_FILE = os.path.join(STATE_DIR, "deep_collection_counter.json")
 
-def _collect_market_snapshot(market):
+
+def _is_deep_run() -> bool:
+    """Increment the persistent run counter and return True on every Nth tick."""
+    try:
+        with open(_COUNTER_FILE) as f:
+            count = json.load(f).get("count", 0)
+    except (FileNotFoundError, json.JSONDecodeError):
+        count = 0
+    count += 1
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(_COUNTER_FILE, "w") as f:
+        json.dump({"count": count}, f)
+    return count % DEEP_COLLECTION_INTERVAL == 1   # runs 1, 7, 13 … are deep
+
+
+def _collect_market_snapshot(market, deep: bool = True):
     market_id = market["market_id"]
     token_ids = market.get("token_ids") or []
     yes_token = token_ids[0] if token_ids else None          # YES token (index 0)
@@ -40,7 +70,8 @@ def _collect_market_snapshot(market):
         snapshot["errors"].append("no token_ids")
         return snapshot
 
-    # Fetch YES ask price (price to buy a YES share)
+    # ── Light fields (every run) ──────────────────────────────────────────────
+
     try:
         yes_ask = api.get_price(yes_token, side="buy")
         if yes_ask is not None and yes_ask > 0:
@@ -49,7 +80,6 @@ def _collect_market_snapshot(market):
         snapshot["errors"].append(f"yes_ask: {e}")
         logger.warning(f"  yes_ask failed for {market_id}: {e}")
 
-    # Fetch NO ask price (price to buy a NO share)
     try:
         if no_token:
             no_ask = api.get_price(no_token, side="buy")
@@ -79,48 +109,53 @@ def _collect_market_snapshot(market):
         logger.warning(f"  midpoint failed for {market_id}: {e}")
 
     try:
-        fidelity_mins = FIDELITY_MAP.get(PRICE_HISTORY_FIDELITY, 60)
-        snapshot["price_history"] = api.get_price_history(
-            yes_token, fidelity=fidelity_mins, days=7)
-    except Exception as e:
-        snapshot["errors"].append(f"price_history: {e}")
-        logger.warning(f"  price_history failed for {market_id}: {e}")
-
-    # Fallback: derive price from latest price_history point if midpoint fetch failed
-    if snapshot["yes_price"] is None and snapshot["price_history"]:
-        try:
-            hist = sorted(snapshot["price_history"], key=lambda x: x.get("t", 0))
-            latest_p = float(hist[-1].get("p", 0)) if hist else 0.0
-            if latest_p > 0:
-                snapshot["yes_price"] = latest_p
-                snapshot["midpoint"]  = latest_p
-                snapshot["no_price"]  = round(1.0 - latest_p, 6)
-                snapshot["errors"].append("midpoint: DEGRADED — used price_history fallback, not live orderbook")
-        except Exception as e:
-            logger.warning(f"  price_history fallback failed for {market_id}: {e}")
-
-    try:
         snapshot["fee_rate_bps"] = api.get_fee_rate(yes_token)
     except Exception as e:
         snapshot["errors"].append(f"fee_rate: {e}")
 
-    try:
-        snapshot["open_interest"] = api.get_open_interest(market_id)
-    except Exception as e:
-        snapshot["errors"].append(f"open_interest: {e}")
-        logger.warning(f"  OI failed for {market_id}: {e}")
+    # ── Deep fields (every Nth run only) ─────────────────────────────────────
 
-    try:
-        condition_id = market.get("condition_id")
-        if condition_id:
-            snapshot["top_holders"] = api.get_top_holders(condition_id, limit=10)
-    except Exception as e:
-        snapshot["errors"].append(f"top_holders: {e}")
+    if deep:
+        try:
+            fidelity_mins = FIDELITY_MAP.get(PRICE_HISTORY_FIDELITY, 60)
+            snapshot["price_history"] = api.get_price_history(
+                yes_token, fidelity=fidelity_mins, days=7)
+        except Exception as e:
+            snapshot["errors"].append(f"price_history: {e}")
+            logger.warning(f"  price_history failed for {market_id}: {e}")
 
-    try:
-        snapshot["recent_trades"] = api.get_trades(market_id, limit=50)
-    except Exception as e:
-        snapshot["errors"].append(f"recent_trades: {e}")
+        # Fallback: derive price from latest price_history point if midpoint fetch failed
+        if snapshot["yes_price"] is None and snapshot["price_history"]:
+            try:
+                hist = sorted(snapshot["price_history"], key=lambda x: x.get("t", 0))
+                latest_p = float(hist[-1].get("p", 0)) if hist else 0.0
+                if latest_p > 0:
+                    snapshot["yes_price"] = latest_p
+                    snapshot["midpoint"]  = latest_p
+                    snapshot["no_price"]  = round(1.0 - latest_p, 6)
+                    snapshot["errors"].append(
+                        "midpoint: DEGRADED — used price_history fallback, not live orderbook"
+                    )
+            except Exception as e:
+                logger.warning(f"  price_history fallback failed for {market_id}: {e}")
+
+        try:
+            snapshot["open_interest"] = api.get_open_interest(market_id)
+        except Exception as e:
+            snapshot["errors"].append(f"open_interest: {e}")
+            logger.warning(f"  OI failed for {market_id}: {e}")
+
+        try:
+            condition_id = market.get("condition_id")
+            if condition_id:
+                snapshot["top_holders"] = api.get_top_holders(condition_id, limit=10)
+        except Exception as e:
+            snapshot["errors"].append(f"top_holders: {e}")
+
+        try:
+            snapshot["recent_trades"] = api.get_trades(market_id, limit=50)
+        except Exception as e:
+            snapshot["errors"].append(f"recent_trades: {e}")
 
     return snapshot
 
@@ -133,6 +168,9 @@ def run():
         logger.warning("Watchlist is empty — run market_scanner first")
         return {"agent": "data_collector", "collected": 0, "failed": 0}
 
+    is_deep = _is_deep_run()
+    logger.info(f"Collection mode: {'DEEP' if is_deep else 'light'}")
+
     collected = 0
     failed    = 0
 
@@ -140,7 +178,7 @@ def run():
         market_id = market.get("market_id", "unknown")
         logger.info(f"Collecting: {market_id} — {str(market.get('question', ''))[:60]}")
         try:
-            snapshot = _collect_market_snapshot(market)
+            snapshot = _collect_market_snapshot(market, deep=is_deep)
             db.insert_snapshot(snapshot)
             if snapshot["errors"]:
                 logger.warning(f"  Saved with {len(snapshot['errors'])} partial errors")
@@ -150,4 +188,4 @@ def run():
             failed += 1
 
     logger.info(f"Collection complete: {collected} saved, {failed} failed")
-    return {"agent": "data_collector", "collected": collected, "failed": failed}
+    return {"agent": "data_collector", "collected": collected, "failed": failed, "deep": is_deep}

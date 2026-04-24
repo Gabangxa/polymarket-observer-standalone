@@ -18,6 +18,8 @@ RESOLUTION_WINDOWS = {
     "spread_harvesting":  2,
     "neg_risk_overround": 6,
     "mean_reversion":     4,
+    "binary_arb":         0.5,   # 30-min arb-persistence check
+    "micro_spread_scalp": 2,     # same market-neutral window as spread_harvesting
 }
 
 
@@ -64,6 +66,42 @@ def _resolve_reversion(signal: dict, current_snapshot: dict):
         outcome = exit_price > entry_price
         pnl     = exit_price - entry_price
 
+    return outcome, round(exit_price, 4), round(pnl, 6)
+
+
+def _resolve_binary_arb(signal: dict, current_snapshot: dict):
+    """
+    Arb persisted = yes_ask + no_ask still below 1.0 after the check window.
+    Win  = arb still open (sum < 1.0)
+    Loss = arb has closed (sum >= 1.0)
+    PnL  = guaranteed_profit if win, else 0
+    """
+    meta              = signal.get("metadata") or {}
+    guaranteed_profit = float(meta.get("guaranteed_profit") or 0)
+    yes_ask           = float(current_snapshot.get("yes_ask") or 1)
+    no_ask            = float(current_snapshot.get("no_ask") or 1)
+    current_sum       = yes_ask + no_ask
+    outcome           = current_sum < 1.0
+    pnl               = guaranteed_profit if outcome else 0.0
+    return outcome, round(current_sum, 4), round(pnl, 6)
+
+
+def _resolve_micro_spread(signal: dict, current_snapshot: dict):
+    """
+    Micro-spread captured if market price stayed near entry (spread pocketed).
+    Win  = |exit - entry_mid| <= spread * 0.5
+    PnL  = potential_capture if win, else -|price_move|
+    """
+    meta              = signal.get("metadata") or {}
+    best_bid          = float(meta.get("best_bid") or 0)
+    best_ask          = float(meta.get("best_ask") or 0)
+    entry_mid         = (best_bid + best_ask) / 2 if best_bid and best_ask else 0
+    entry_spread      = float(meta.get("spread") or 0)
+    potential_capture = float(meta.get("potential_capture") or 0)
+    exit_price        = float(current_snapshot.get("yes_price") or entry_mid)
+    price_move        = abs(exit_price - entry_mid)
+    outcome           = price_move <= entry_spread * 0.5
+    pnl               = potential_capture if outcome else -price_move
     return outcome, round(exit_price, 4), round(pnl, 6)
 
 
@@ -141,6 +179,22 @@ def run():
                     if outcome is None:
                         skipped_total += 1
                         continue
+
+                elif strategy == "binary_arb":
+                    if not market_id or market_id not in snapshots_by_market:
+                        skipped_total += 1
+                        continue
+                    outcome, exit_price, pnl = _resolve_binary_arb(
+                        signal, snapshots_by_market[market_id]
+                    )
+
+                elif strategy == "micro_spread_scalp":
+                    if not market_id or market_id not in snapshots_by_market:
+                        skipped_total += 1
+                        continue
+                    outcome, exit_price, pnl = _resolve_micro_spread(
+                        signal, snapshots_by_market[market_id]
+                    )
 
                 else:
                     skipped_total += 1
