@@ -1,6 +1,7 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { formatDistanceToNow, parseISO } from "date-fns";
+import { formatDistanceToNow, parseISO, format } from "date-fns";
+import { TZDate } from "@date-fns/tz";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -42,6 +43,20 @@ export function formatRelativeTime(dateStr: string | null | undefined): string {
     return formatDistanceToNow(parseISO(dateStr), { addSuffix: true });
   } catch (e) {
     return dateStr;
+  }
+}
+
+export function formatInTz(
+  dateInput: string | Date | null | undefined,
+  pattern: string,
+  tz: string
+): string {
+  if (!dateInput) return "-";
+  try {
+    const d = typeof dateInput === "string" ? parseISO(dateInput) : dateInput;
+    return format(new TZDate(d, tz), pattern);
+  } catch {
+    return "-";
   }
 }
 

@@ -12,8 +12,8 @@ import {
 } from "recharts";
 import { useLiveSignals, useStrategyPerformance } from "@/hooks/use-polymarket";
 import { StatCard, Badge, TableSkeleton } from "@/components/ui-elements";
-import { getStrategyColor, parseNumeric } from "@/lib/utils";
-import { format } from "date-fns";
+import { getStrategyColor, parseNumeric, formatInTz } from "@/lib/utils";
+import { useTimezone } from "@/hooks/use-timezone";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -38,13 +38,13 @@ function winRateColor(rate: number | string | null | undefined): string {
 }
 
 // Build daily accuracy trend from raw signals data
-function buildTrend(signals: any[]) {
+function buildTrend(signals: any[], tz: string) {
   const resolved = signals.filter((s) => s.resolved);
   const byDay: Record<string, { wins: number; total: number }> = {};
 
   for (const s of resolved) {
     if (!s.emittedAt) continue;
-    const day = format(new Date(s.emittedAt), "MMM dd");
+    const day = formatInTz(s.emittedAt, "MMM dd", tz);
     if (!byDay[day]) byDay[day] = { wins: 0, total: 0 };
     byDay[day].total += 1;
     if (s.outcome === true) byDay[day].wins += 1;
@@ -68,10 +68,11 @@ const STRATEGY_LABELS: Record<string, string> = {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function Performance() {
+  const { timezone } = useTimezone();
   const { data: perf, isLoading: perfLoading, isError: perfError } = useStrategyPerformance();
   const { data: signalsData, isLoading: signalsLoading } = useLiveSignals({ hours: 168, limit: 500 });
 
-  const trendData = signalsData ? buildTrend(signalsData.signals) : [];
+  const trendData = signalsData ? buildTrend(signalsData.signals, timezone) : [];
 
   // Aggregate totals for summary cards
   const totalSignals   = perf?.strategies.reduce((a, s) => a + s.signalCount, 0) ?? 0;

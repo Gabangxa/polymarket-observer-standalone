@@ -12,9 +12,11 @@ import {
   Moon,
   Sun,
   Settings,
+  Globe,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useLiveHealth } from "@/hooks/use-polymarket";
+import { useTimezone, TIMEZONES } from "@/hooks/use-timezone";
 
 const NAV_ITEMS = [
   { href: "/",             label: "Overview",    icon: LayoutDashboard },
@@ -29,6 +31,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const { data: health, isError } = useLiveHealth();
   const [isDark, setIsDark] = useState(true);
+  const { timezone, setTimezone } = useTimezone();
 
   useEffect(() => {
     if (isDark) {
@@ -176,6 +179,33 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 Connecting...
               </div>
             )}
+          </div>
+
+          {/* Timezone picker — desktop only */}
+          <div className="hidden lg:flex items-center gap-2 px-3 py-2">
+            <Globe
+              className="w-5 h-5 shrink-0"
+              style={{ color: "var(--color-text-tertiary)" }}
+            />
+            <select
+              value={timezone}
+              onChange={(e) => setTimezone(e.target.value)}
+              className="flex-1 text-sm font-medium bg-transparent border-0 outline-none cursor-pointer appearance-none"
+              style={{ color: "var(--color-text-tertiary)" }}
+            >
+              {TIMEZONES.map((tz) => (
+                <option
+                  key={tz.value}
+                  value={tz.value}
+                  style={{
+                    background: "var(--color-app-surface)",
+                    color: "var(--color-text-primary)",
+                  }}
+                >
+                  {tz.label}
+                </option>
+              ))}
+            </select>
           </div>
 
           {/* Theme toggle */}
