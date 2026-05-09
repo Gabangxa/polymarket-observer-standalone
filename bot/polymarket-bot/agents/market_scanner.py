@@ -206,6 +206,10 @@ def run():
     upserted = db.upsert_markets(watchlist)
     logger.info(f"Upserted {upserted} markets")
 
+    evicted = db.prune_watchlist([m["market_id"] for m in watchlist])
+    if evicted:
+        logger.info(f"Evicted {evicted} market(s) that left the top-{MAX_WATCHLIST_SIZE}")
+
     return {
         "agent": "market_scanner",
         "scanned": len(all_markets),
