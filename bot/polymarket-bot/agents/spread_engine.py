@@ -37,16 +37,44 @@ def _analyse_snapshot(snapshot):
     if not midpoint or midpoint <= 0:
         midpoint = yes_price
 
+    spread_f = float(spread)
     fee_rt = _estimate_fee(float(midpoint), tags, fee_bps) * 2
-    if fee_rt <= 0:
-        return None
 
-    fee_multiple = float(spread) / fee_rt
+    if fee_rt <= 0:
+        # Zero-fee market (e.g. geopolitics) — entire spread is pure edge.
+        # Score normalised against 10¢ reference spread; minimum 1¢ to avoid noise.
+        if spread_f < 0.01:
+            return None
+        signal_score = min(spread_f / 0.10, 1.0)
+        return {
+            "strategy":       "spread_harvesting",
+            "market_id":      snapshot["market_id"],
+            "event_slug":     snapshot.get("event_slug"),
+            "question":       snapshot.get("question"),
+            "tags":           tags,
+            "yes_price":      round(float(yes_price), 4),
+            "spread":         round(spread_f, 4),
+            "fee_round_trip": 0.0,
+            "net_spread":     round(spread_f, 4),
+            "fee_multiple":   None,   # infinite — fee-free market
+            "signal_score":   round(signal_score, 4),
+            "sizing_note": (
+                f"Fee-free. Net edge {spread_f:.4f}/share. "
+                f"Adverse selection risk ≈ {spread_f:.4f}/share (full spread). "
+                f"Suggested lot: (bankroll × 1%) ÷ {spread_f:.4f} shares."
+            ),
+            "trigger": (
+                f"Fee-free market. Spread {spread_f:.4f} is pure edge "
+                f"(no round-trip cost). Net edge: {spread_f:.4f}/share."
+            ),
+        }
+
+    fee_multiple = spread_f / fee_rt
     if fee_multiple < SPREAD_FEE_MULTIPLE:
         return None
 
-    net_spread   = float(spread) - fee_rt
-    signal_score = net_spread / float(spread)
+    net_spread   = spread_f - fee_rt
+    signal_score = net_spread / spread_f
 
     if signal_score < SPREAD_MIN_SIGNAL_SCORE:
         return None
@@ -58,13 +86,18 @@ def _analyse_snapshot(snapshot):
         "question":       snapshot.get("question"),
         "tags":           tags,
         "yes_price":      round(float(yes_price), 4),
-        "spread":         round(float(spread), 4),
+        "spread":         round(spread_f, 4),
         "fee_round_trip": round(fee_rt, 6),
         "net_spread":     round(net_spread, 4),
         "fee_multiple":   round(fee_multiple, 2),
         "signal_score":   round(signal_score, 4),
+        "sizing_note": (
+            f"Net edge {net_spread:.4f}/share after {fee_rt:.4f} round-trip fee. "
+            f"Adverse selection risk ≈ {spread_f:.4f}/share (full spread). "
+            f"Suggested lot: (bankroll × 1%) ÷ {spread_f:.4f} shares."
+        ),
         "trigger": (
-            f"Spread {float(spread):.4f} is {fee_multiple:.1f}× the round-trip fee "
+            f"Spread {spread_f:.4f} is {fee_multiple:.1f}× the round-trip fee "
             f"(threshold {SPREAD_FEE_MULTIPLE}×). Net edge after fees: {net_spread:.4f}/share."
         ),
     }

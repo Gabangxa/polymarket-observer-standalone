@@ -8,18 +8,36 @@
 #   snapshots  — one row per market per collection run
 #   signals    — one row per signal emitted by any strategy engine
 
+import atexit
 import json
 import logging
 import os
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
+from config import MAX_WATCHLIST_SIZE, SNAPSHOT_RETENTION_DAYS
 
 logger = logging.getLogger(__name__)
 
-# ── Connection ────────────────────────────────────────────────────────────────
+# ── Connection pool ───────────────────────────────────────────────────────────
+# ThreadedConnectionPool is required because two threads share the DB:
+#   - main thread  : pipeline (scheduler → engines → outcome_tracker)
+#   - daemon thread: Flask keep-alive server (health, signals, watchlist endpoints)
+#
+# Pool sizing: each thread holds at most 1 connection at a time (queries are
+# sequential within each thread), so 2 would suffice. 4 gives headroom for
+# brief overlap during collection + signal resolution + simultaneous HTTP hit.
+
+_POOL_MIN = 1
+_POOL_MAX = 4
+
+_pool: psycopg2.pool.ThreadedConnectionPool | None = None
+_pool_lock = threading.Lock()
+
 
 def _get_url() -> str:
     url = os.environ.get("DATABASE_URL")
@@ -32,18 +50,57 @@ def _get_url() -> str:
     return url
 
 
+def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
+    """Return the shared connection pool, initialising it on first call."""
+    global _pool
+    if _pool is not None:
+        return _pool
+    with _pool_lock:
+        if _pool is not None:        # double-checked locking
+            return _pool
+        _pool = psycopg2.pool.ThreadedConnectionPool(
+            _POOL_MIN,
+            _POOL_MAX,
+            _get_url(),
+            cursor_factory=psycopg2.extras.RealDictCursor,
+        )
+        logger.info(f"DB connection pool ready (min={_POOL_MIN}, max={_POOL_MAX})")
+        return _pool
+
+
+def _close_pool() -> None:
+    """Drain the pool on process exit. Registered via atexit."""
+    global _pool
+    if _pool is not None:
+        try:
+            _pool.closeall()
+        except Exception:
+            pass
+        _pool = None
+
+
+atexit.register(_close_pool)
+
+
 @contextmanager
 def get_conn():
-    """Context manager yielding a psycopg2 connection. Auto-commits on exit."""
-    conn = psycopg2.connect(_get_url(), cursor_factory=psycopg2.extras.RealDictCursor)
+    """Borrow a connection from the pool. Auto-commits on clean exit,
+    rolls back on error. Discards the connection if rollback itself fails
+    (indicates a dead connection that should not be returned to the pool)."""
+    pool    = _get_pool()
+    conn    = pool.getconn()
+    discard = False
     try:
         yield conn
         conn.commit()
     except Exception:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:
+            discard = True   # connection is dead; don't recycle it
         raise
     finally:
-        conn.close()
+        pool.putconn(conn, close=discard)
 
 
 # ── Schema ────────────────────────────────────────────────────────────────────
@@ -117,6 +174,14 @@ ALTER TABLE signals ADD COLUMN IF NOT EXISTS outcome BOOLEAN;
 ALTER TABLE markets ADD COLUMN IF NOT EXISTS category TEXT;
 ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS yes_ask NUMERIC;
 ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS no_ask NUMERIC;
+
+-- Dedup constraint: one signal per (strategy, market/event, clock-hour).
+-- COALESCE(market_id, event_slug) covers both per-market signals (market_id set)
+-- and per-event signals like neg_risk_overround (market_id NULL, event_slug set).
+-- This replaces the application-level check+insert two-connection pattern with a
+-- single atomic INSERT ... ON CONFLICT DO NOTHING.
+CREATE UNIQUE INDEX IF NOT EXISTS signals_dedup_hourly
+    ON signals (strategy, COALESCE(market_id, event_slug), date_trunc('hour', emitted_at));
 """
 
 
@@ -173,14 +238,46 @@ def upsert_markets(watchlist: list[dict]) -> int:
 
 
 def get_watchlist() -> list[dict]:
-    """Return all markets currently in the watchlist, ordered by score."""
+    """Return active watchlist markets ordered by score, capped at MAX_WATCHLIST_SIZE."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT * FROM markets
                 ORDER BY score DESC NULLS LAST
-            """)
+                LIMIT %s
+            """, (MAX_WATCHLIST_SIZE,))
             return [dict(r) for r in cur.fetchall()]
+
+
+def prune_watchlist(keep_ids: list[str]) -> int:
+    """
+    Delete markets (and their snapshots) whose market_id is not in keep_ids.
+    Called after each scanner run to enforce the watchlist cap.
+
+    Safety: returns 0 immediately if keep_ids is empty — never wipes the
+    entire DB due to an upstream API failure returning an empty list.
+    Returns the number of markets removed.
+    """
+    if not keep_ids:
+        return 0
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM snapshots WHERE NOT (market_id = ANY(%s))",
+                (keep_ids,),
+            )
+            snap_count = cur.rowcount
+            cur.execute(
+                "DELETE FROM markets WHERE NOT (market_id = ANY(%s))",
+                (keep_ids,),
+            )
+            market_count = cur.rowcount
+    if market_count:
+        logger.info(
+            f"Watchlist pruned: removed {market_count} market(s) "
+            f"and {snap_count} orphaned snapshot(s)"
+        )
+    return market_count
 
 
 # ── snapshots table ───────────────────────────────────────────────────────────
@@ -301,6 +398,24 @@ def get_snapshots_for_market(market_id: str, limit: int = 336) -> list[dict]:
             return [dict(r) for r in cur.fetchall()]
 
 
+def prune_old_snapshots() -> int:
+    """
+    Delete snapshots older than SNAPSHOT_RETENTION_DAYS.
+    Called once per UTC day from the main pipeline.
+    Returns the number of rows deleted.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM snapshots WHERE collected_at < NOW() - (%s * INTERVAL '1 day')",
+                (SNAPSHOT_RETENTION_DAYS,),
+            )
+            n = cur.rowcount
+    if n:
+        logger.info(f"Snapshot prune: removed {n} row(s) older than {SNAPSHOT_RETENTION_DAYS} days")
+    return n
+
+
 def get_neg_risk_snapshots_by_event() -> dict[str, list[dict]]:
     """
     Return latest snapshot per market grouped by event_slug,
@@ -312,6 +427,7 @@ def get_neg_risk_snapshots_by_event() -> dict[str, list[dict]]:
                 SELECT DISTINCT ON (s.market_id)
                     s.market_id,
                     s.yes_price,
+                    s.yes_ask,
                     s.collected_at,
                     m.question,
                     m.event_slug,
@@ -332,35 +448,16 @@ def get_neg_risk_snapshots_by_event() -> dict[str, list[dict]]:
 
 def insert_signal(signal: dict) -> int:
     """
-    Insert one signal. Deduplicates within the same hour by
-    (strategy, market_id/event_slug). Returns new row id or -1 if duplicate.
+    Insert one signal. Returns the new row id, or -1 if a duplicate exists
+    for (strategy, market_id/event_slug) within the current clock-hour.
+
+    Deduplication is enforced by the signals_dedup_hourly unique index, making
+    this operation atomic — no TOCTOU race between a separate check and insert.
     """
     market_id  = signal.get("market_id")
     event_slug = signal.get("event_slug")
     strategy   = signal["strategy"]
 
-    # Deduplicate: skip if same signal already emitted in the last hour
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT id FROM signals
-                WHERE strategy = %s
-                  AND (market_id = %s OR event_slug = %s)
-                  AND emitted_at > NOW() - INTERVAL '1 hour'
-                LIMIT 1
-            """, (strategy, market_id, event_slug))
-            if cur.fetchone():
-                return -1   # duplicate within the hour
-
-    sql = """
-        INSERT INTO signals (
-            strategy, market_id, event_slug, signal_score, metadata, emitted_at
-        ) VALUES (
-            %(strategy)s, %(market_id)s, %(event_slug)s,
-            %(signal_score)s, %(metadata)s, NOW()
-        )
-        RETURNING id
-    """
     row = {
         "strategy":     strategy,
         "market_id":    market_id,
@@ -368,10 +465,25 @@ def insert_signal(signal: dict) -> int:
         "signal_score": signal.get("signal_score"),
         "metadata":     json.dumps(signal),
     }
+
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, row)
-            row_id = cur.fetchone()["id"]
+            cur.execute("""
+                INSERT INTO signals (
+                    strategy, market_id, event_slug, signal_score, metadata, emitted_at
+                ) VALUES (
+                    %(strategy)s, %(market_id)s, %(event_slug)s,
+                    %(signal_score)s, %(metadata)s, NOW()
+                )
+                ON CONFLICT DO NOTHING
+                RETURNING id
+            """, row)
+            result = cur.fetchone()
+
+    if result is None:
+        return -1   # duplicate within the clock-hour
+
+    row_id = result["id"]
 
     from config import SIGNAL_WEBHOOK_URL
     if SIGNAL_WEBHOOK_URL:
@@ -483,38 +595,49 @@ def update_signal_outcome(signal_id: int, exit_price: float, pnl: float, outcome
             """, (exit_price, pnl, outcome, signal_id))
 
 
-def get_snapshot_pairs() -> list[dict]:
+def get_snapshot_pairs(min_hours: float = 0.25, max_hours: float = 2.0) -> list[dict]:
     """
-    Return (latest, previous) snapshot pair for each market.
-    Used by odds_shift_engine to detect inter-snapshot price movements.
-    Only returns pairs where both snapshots have a non-null yes_price.
+    Return (latest, reference) snapshot pair for each market.
+    Used by odds_shift_engine to detect meaningful price movements.
+
+    'reference' is the most recent snapshot that is between min_hours and max_hours old,
+    so the comparison window is configurable and independent of collection frequency.
+    With 30s collection cadence, rn=2 pairs are ~30s apart — far too short for a
+    meaningful shift signal. This query deliberately looks back a real time window.
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                WITH ranked AS (
-                    SELECT market_id, yes_price, collected_at, spread,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY market_id ORDER BY collected_at DESC
-                           ) AS rn
+                WITH latest AS (
+                    SELECT DISTINCT ON (market_id)
+                        market_id, yes_price, collected_at, spread
                     FROM snapshots
+                    WHERE yes_price IS NOT NULL
+                    ORDER BY market_id, collected_at DESC
+                ),
+                reference AS (
+                    SELECT DISTINCT ON (market_id)
+                        market_id,
+                        yes_price  AS ref_price,
+                        collected_at AS ref_at
+                    FROM snapshots
+                    WHERE yes_price IS NOT NULL
+                      AND collected_at <= NOW() - (%(min_h)s * INTERVAL '1 hour')
+                      AND collected_at >= NOW() - (%(max_h)s * INTERVAL '1 hour')
+                    ORDER BY market_id, collected_at DESC
                 )
                 SELECT
-                    latest.market_id,
-                    latest.yes_price   AS latest_price,
-                    latest.collected_at AS latest_at,
-                    latest.spread      AS latest_spread,
-                    prev.yes_price     AS prev_price,
-                    prev.collected_at  AS prev_at,
+                    l.market_id,
+                    l.yes_price    AS latest_price,
+                    l.collected_at AS latest_at,
+                    l.spread       AS latest_spread,
+                    r.ref_price    AS prev_price,
+                    r.ref_at       AS prev_at,
                     m.question, m.tags, m.event_slug, m.neg_risk, m.category
-                FROM ranked latest
-                JOIN ranked prev
-                    ON latest.market_id = prev.market_id AND prev.rn = 2
-                JOIN markets m ON m.market_id = latest.market_id
-                WHERE latest.rn = 1
-                  AND latest.yes_price IS NOT NULL
-                  AND prev.yes_price IS NOT NULL
-            """)
+                FROM latest l
+                JOIN reference r  ON l.market_id = r.market_id
+                JOIN markets m    ON l.market_id = m.market_id
+            """, {"min_h": min_hours, "max_h": max_hours})
             return [dict(r) for r in cur.fetchall()]
 
 

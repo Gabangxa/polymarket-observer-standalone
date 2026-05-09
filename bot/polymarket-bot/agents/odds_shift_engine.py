@@ -39,9 +39,14 @@ def _analyse_pair(row: dict) -> dict | None:
             latest_at = datetime.fromisoformat(latest_at.replace("Z", "+00:00"))
         if isinstance(prev_at, str):
             prev_at = datetime.fromisoformat(prev_at.replace("Z", "+00:00"))
-        hours_elapsed = max((latest_at - prev_at).total_seconds() / 3600, ODDS_SHIFT_MIN_HOURS)
+        hours_elapsed = (latest_at - prev_at).total_seconds() / 3600
 
-    velocity = round(abs(delta) / hours_elapsed, 4) if hours_elapsed > 0 else None
+    # Skip pairs shorter than the minimum window — don't clamp elapsed time, as that
+    # would inflate velocity and produce misleading signals on sub-threshold windows.
+    if hours_elapsed < ODDS_SHIFT_MIN_HOURS:
+        return None
+
+    velocity = round(abs(delta) / hours_elapsed, 4)
 
     # EV: assume price will revert to pre-shift level.
     # If delta > 0 (price rose), bet NO (expect it to fall back).
@@ -52,7 +57,8 @@ def _analyse_pair(row: dict) -> dict | None:
 
     sizing = size_recommendation(q=q, p=latest_price, side=side)
 
-    signal_score = round(abs(delta), 4)   # raw delta as score
+    # Normalise score to 0.0–1.0: 5¢ move → ~0.33, 15¢ move → 1.0 (ceiling)
+    signal_score = round(min(abs(delta) / 0.15, 1.0), 4)
 
     signal = {
         "strategy":       "odds_shift",
@@ -72,10 +78,6 @@ def _analyse_pair(row: dict) -> dict | None:
             f"{prev_price:.4f} → {latest_price:.4f} "
             f"over {hours_elapsed:.1f}h "
             f"(threshold {ODDS_SHIFT_THRESHOLD}, velocity: {velocity:.4f}/h)."
-            if velocity else
-            f"Price shifted {delta:+.4f} ({direction}) "
-            f"{prev_price:.4f} → {latest_price:.4f} "
-            f"(threshold {ODDS_SHIFT_THRESHOLD})."
         ),
     }
 
@@ -88,9 +90,11 @@ def _analyse_pair(row: dict) -> dict | None:
 def run() -> dict:
     logger.info("=== Odds shift engine starting ===")
 
-    pairs = db.get_snapshot_pairs()
+    # Use window-based pairs: compare latest snapshot against one from
+    # ODDS_SHIFT_MIN_HOURS–2h ago so the elapsed time is always meaningful.
+    pairs = db.get_snapshot_pairs(min_hours=ODDS_SHIFT_MIN_HOURS, max_hours=2.0)
     if not pairs:
-        logger.info("No snapshot pairs available yet")
+        logger.info(f"No snapshot pairs in the {ODDS_SHIFT_MIN_HOURS}h–2h window yet")
         return {"agent": "odds_shift_engine", "checked": 0, "signals": 0}
 
     logger.info(f"Checking {len(pairs)} market snapshot pairs")

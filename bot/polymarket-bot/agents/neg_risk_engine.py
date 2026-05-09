@@ -3,7 +3,7 @@
 # Reads neg-risk snapshots grouped by event, writes signals to DB.
 
 import logging
-from config import NEG_RISK_MAKER_THRESHOLD, NEG_RISK_MIN_OUTCOMES
+from config import NEG_RISK_MAKER_THRESHOLD, NEG_RISK_TAKER_THRESHOLD, NEG_RISK_MIN_OUTCOMES
 import db
 from agents.ev_calculator import yes_ev
 
@@ -14,28 +14,54 @@ def _analyse_event(event_slug, snapshots):
     if len(snapshots) < NEG_RISK_MIN_OUTCOMES:
         return None
 
-    prices = []
+    # Build per-outcome records. yes_ask is used for the TAKER check (you pay ask to buy YES).
+    # Fall back to yes_price (midpoint) when ask is unavailable.
+    records = []
     for s in snapshots:
-        price = s.get("yes_price")
-        if price is not None and float(price) > 0:
-            prices.append((s.get("question", "?"), float(price), s.get("market_id")))
+        midpoint = s.get("yes_price")
+        ask      = s.get("yes_ask")
+        if midpoint is None or float(midpoint) <= 0:
+            continue
+        records.append({
+            "question":  s.get("question", "?"),
+            "market_id": s.get("market_id"),
+            "midpoint":  float(midpoint),
+            "ask":       float(ask) if ask is not None else float(midpoint),
+        })
 
-    if len(prices) < NEG_RISK_MIN_OUTCOMES:
+    if len(records) < NEG_RISK_MIN_OUTCOMES:
         return None
 
-    total = sum(p for _, p, _ in prices)
-    if total <= NEG_RISK_MAKER_THRESHOLD:
+    # Taker check: sum of asks < NEG_RISK_TAKER_THRESHOLD → guaranteed profit buying all YES
+    sum_asks = sum(r["ask"] for r in records)
+    # Maker check: sum of midpoints > NEG_RISK_MAKER_THRESHOLD → over-round at mid (sell NO)
+    sum_mids = sum(r["midpoint"] for r in records)
+
+    is_taker_arb = sum_asks < NEG_RISK_TAKER_THRESHOLD
+    is_maker_arb = sum_mids > NEG_RISK_MAKER_THRESHOLD
+
+    if not is_taker_arb and not is_maker_arb:
         return None
 
-    overround = total - 1.0
-    n = len(prices)
+    n = len(records)
+    # Report the more actionable edge; taker arb (instant fill) takes priority
+    if is_taker_arb:
+        total    = sum_asks
+        overround = 1.0 - total     # profit per share set bought
+        ev_side  = "YES (all outcomes, taker)"
+        threshold = NEG_RISK_TAKER_THRESHOLD
+        trigger_note = f"Sum of YES asks = {total:.4f} < {threshold} — buy all YES for guaranteed profit."
+    else:
+        total    = sum_mids
+        overround = total - 1.0
+        ev_side  = "NO (all outcomes, maker)"
+        threshold = NEG_RISK_MAKER_THRESHOLD
+        trigger_note = f"Sum of YES mids = {total:.4f} > {threshold} — sell NO on all outcomes."
 
-    # EV per outcome: fair price = 1/n (uniform). Selling NO on outcome i:
-    # q_no = 1 - (1/n), p_no = 1 - p_i. EV_no = yes_ev(q_no, p_no).
     fair_p = 1.0 / n
     ev_per_outcome = [
-        round(yes_ev(1.0 - fair_p, 1.0 - p), 4)
-        for _, p, _ in prices
+        round(yes_ev(1.0 - fair_p, 1.0 - r["midpoint"]), 4)
+        for r in records
     ]
     avg_ev = round(sum(ev_per_outcome) / n, 4) if ev_per_outcome else 0.0
 
@@ -45,28 +71,29 @@ def _analyse_event(event_slug, snapshots):
         "event_slug":   event_slug,
         "num_outcomes": n,
         "sum_prices":   round(total, 6),
+        "sum_asks":     round(sum_asks, 6),
+        "sum_mids":     round(sum_mids, 6),
         "overround":    round(overround, 6),
         "edge_pct":     round(overround * 100, 4),
         "signal_score": round(overround, 6),
         "ev":           avg_ev,
-        "ev_side":      "NO (all outcomes)",
+        "ev_side":      ev_side,
         "sizing_note":  (
-            f"Sell NO on all {n} outcomes | "
+            f"{ev_side} | "
             f"avg EV={avg_ev*100:.1f}% per outcome | "
             f"over-round={overround*100:.2f}c"
         ),
         "outcomes": [
             {
-                "question": q, "yes_price": round(p, 4), "market_id": mid,
-                "ev_no": round(yes_ev(1.0 - fair_p, 1.0 - p), 4),
+                "question":  r["question"],
+                "yes_price": round(r["midpoint"], 4),
+                "yes_ask":   round(r["ask"], 4),
+                "market_id": r["market_id"],
+                "ev_no":     round(yes_ev(1.0 - fair_p, 1.0 - r["midpoint"]), 4),
             }
-            for q, p, mid in sorted(prices, key=lambda x: x[1], reverse=True)
+            for r in sorted(records, key=lambda x: x["midpoint"], reverse=True)
         ],
-        "trigger": (
-            f"Sum of {n} YES prices = {total:.4f} "
-            f"(threshold {NEG_RISK_MAKER_THRESHOLD}). "
-            f"Over-round: {overround*100:.2f}¢ — sell NO on all {n} outcomes."
-        ),
+        "trigger": trigger_note,
     }
 
 

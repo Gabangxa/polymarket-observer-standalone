@@ -18,6 +18,7 @@ RESOLUTION_WINDOWS = {
     "spread_harvesting":  2,
     "neg_risk_overround": 6,
     "mean_reversion":     4,
+    "odds_shift":         4,     # same reversion window as mean_reversion
     "binary_arb":         0.5,   # 30-min arb-persistence check
     "micro_spread_scalp": 2,     # same market-neutral window as spread_harvesting
 }
@@ -57,6 +58,31 @@ def _resolve_reversion(signal: dict, current_snapshot: dict):
 
     entry_price = float(price_move.get("end_price") or signal.get("entry_price") or 0)
     direction   = price_move.get("direction", "up")
+    exit_price  = float(current_snapshot.get("yes_price") or entry_price)
+
+    if direction == "up":
+        outcome = exit_price < entry_price
+        pnl     = entry_price - exit_price
+    else:
+        outcome = exit_price > entry_price
+        pnl     = exit_price - entry_price
+
+    return outcome, round(exit_price, 4), round(pnl, 6)
+
+
+def _resolve_odds_shift(signal: dict, current_snapshot: dict):
+    """
+    Odds shift is treated as a mean-reversion signal.
+    Entry = latest_price at signal time (the shifted price).
+    Win  = price moved back toward prev_price (reversion occurred).
+    PnL  = directional gain on the reversion position.
+
+    direction="up"   → price rose → bet NO → win if exit < entry
+    direction="down" → price fell → bet YES → win if exit > entry
+    """
+    meta        = signal.get("metadata") or {}
+    entry_price = float(meta.get("latest_price") or signal.get("entry_price") or 0)
+    direction   = meta.get("direction") or "up"
     exit_price  = float(current_snapshot.get("yes_price") or entry_price)
 
     if direction == "up":
@@ -169,6 +195,14 @@ def run():
                         skipped_total += 1
                         continue
                     outcome, exit_price, pnl = _resolve_reversion(
+                        signal, snapshots_by_market[market_id]
+                    )
+
+                elif strategy == "odds_shift":
+                    if not market_id or market_id not in snapshots_by_market:
+                        skipped_total += 1
+                        continue
+                    outcome, exit_price, pnl = _resolve_odds_shift(
                         signal, snapshots_by_market[market_id]
                     )
 

@@ -39,6 +39,7 @@ def run():
             "strategy":         "micro_spread_scalp",
             "market_id":        snap["market_id"],
             "event_slug":       snap.get("event_slug"),
+            "question":         snap.get("question"),
             "signal_score":     round(score, 4),
             "spread":           spread,
             "best_bid":         round(best_bid, 6),
@@ -46,6 +47,11 @@ def run():
             "optimal_bid":      round(optimal_bid, 6),
             "optimal_ask":      round(optimal_ask, 6),
             "potential_capture": round(potential_capture, 6),
+            "sizing_note": (
+                f"Passive market-making. Capture {potential_capture:.4f}/share if both sides fill. "
+                f"Risk: adverse selection — informed flow takes your passive order and moves price. "
+                f"Size 1–2 lots max; losses compound on adversarial fills."
+            ),
             "trigger": (
                 f"Spread {spread:.4f} ≥ threshold {MICRO_SPREAD_THRESHOLD} — "
                 f"optimal bid {optimal_bid:.4f} / ask {optimal_ask:.4f}, "

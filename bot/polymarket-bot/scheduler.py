@@ -29,7 +29,7 @@ logger = logging.getLogger("scheduler")
 from config import POLL_INTERVAL_SECONDS
 import alerts
 
-# Refresh watchlist every N runs  (default: every 12 runs ≈ 1h at 5min interval)
+# Refresh watchlist every N runs  (default: every 12 runs ≈ 6min at 30s interval)
 SCAN_INTERVAL_RUNS = 12
 
 

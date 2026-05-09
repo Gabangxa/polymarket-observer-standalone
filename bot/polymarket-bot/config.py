@@ -7,7 +7,7 @@ CLOB_API   = "https://clob.polymarket.com"
 DATA_API   = "https://data-api.polymarket.com"
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
-POLL_INTERVAL_SECONDS = 30   # 5 minutes between full pipeline runs
+POLL_INTERVAL_SECONDS = 30   # seconds between pipeline runs (≈ 3 min per scan cycle at SCAN_INTERVAL_RUNS=6)
 
 # ── Market scanner filters ────────────────────────────────────────────────────
 SCANNER_LIMIT           = 100   # markets fetched per page from Gamma
@@ -122,7 +122,7 @@ EXECUTION_MIN_SCORE     = float(os.environ.get("EXECUTION_MIN_SCORE", "0.75"))
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_RETENTION_DAYS      = 14   # delete log files older than this many days
-ZERO_SIGNAL_STREAK_WARN = 6    # warn after N consecutive zero-signal runs (~30 min at 5 min interval)
+ZERO_SIGNAL_STREAK_WARN = 6    # warn after N consecutive zero-signal runs (~3 min at 30s interval)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 WATCHLIST_PATH   = "data/watchlist/watched_markets.json"

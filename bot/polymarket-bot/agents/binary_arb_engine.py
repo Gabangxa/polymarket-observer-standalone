@@ -49,11 +49,17 @@ def run():
             "strategy":          "binary_arb",
             "market_id":         snap["market_id"],
             "event_slug":        snap.get("event_slug"),
+            "question":          snap.get("question"),
             "signal_score":      round(score, 4),
             "buy_yes_at":        yes_ask,
             "buy_no_at":         no_ask,
             "total_cost":        round(yes_ask + no_ask, 4),
             "guaranteed_profit": guaranteed_profit,
+            "sizing_note": (
+                f"Guaranteed {guaranteed_profit:.4f}/share if both legs fill. "
+                f"Kelly is unbounded — binding constraint is exit liquidity, not formula. "
+                f"Execution risk: fill YES first, then NO immediately; leg-2 price may slip."
+            ),
             "trigger": (
                 f"YES ask {yes_ask:.4f} + NO ask {no_ask:.4f} = {yes_ask + no_ask:.4f} "
                 f"(threshold {threshold:.4f}) — "
