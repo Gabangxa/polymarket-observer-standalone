@@ -3,8 +3,7 @@
 # find signals emitted before it resolved and record the true outcome.
 #
 # Covers:
-#   mean_reversion  — directional: direction field determines correct outcome
-#   odds_shift      — directional: direction field determines correct outcome
+#   odds_shift         — directional: direction field determines correct outcome
 #   tail_yield_harvest — YES bet: always correct when resolved YES
 #
 # Skips: spread_harvesting, neg_risk_overround, binary_arb, micro_spread_scalp
@@ -20,7 +19,7 @@ import db
 
 logger = logging.getLogger(__name__)
 
-DIRECTIONAL_STRATEGIES = {"mean_reversion", "odds_shift"}
+DIRECTIONAL_STRATEGIES = {"odds_shift"}
 TAIL_STRATEGIES        = {"tail_yield_harvest"}
 
 

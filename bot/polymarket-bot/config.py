@@ -49,11 +49,6 @@ NEG_RISK_TAKER_THRESHOLD = 0.98      # flag when sum(asks) < 0.98
 NEG_RISK_MAKER_THRESHOLD = 1.02      # flag when sum(bids) > 1.02
 NEG_RISK_MIN_OUTCOMES    = 3         # only interesting with 3+ outcomes
 
-# ── Reversion engine thresholds ──────────────────────────────────────────────
-REVERSION_PRICE_MOVE_THRESHOLD = 0.08   # 8 cent move in a short window
-REVERSION_WINDOW_HOURS         = 2      # look back this many hours for the move
-REVERSION_MAX_OI               = 50_000 # USD — only flag thin markets
-
 # ── Fee rate lookup (post March-30 structure) ─────────────────────────────────
 # Used by spread engine to estimate fee cost. Maps category tag → (rate, exponent)
 FEE_RATES = {

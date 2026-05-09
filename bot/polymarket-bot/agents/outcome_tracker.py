@@ -6,7 +6,6 @@
 # Resolution windows (configurable):
 #   spread_harvesting  — 2 hours  (tight MM window)
 #   neg_risk_overround — 6 hours  (over-round usually persists or tightens intraday)
-#   mean_reversion     — 4 hours  (reversion window)
 
 import json
 import logging
@@ -17,8 +16,7 @@ logger = logging.getLogger(__name__)
 RESOLUTION_WINDOWS = {
     "spread_harvesting":  2,
     "neg_risk_overround": 6,
-    "mean_reversion":     4,
-    "odds_shift":         4,     # same reversion window as mean_reversion
+    "odds_shift":         4,
     "binary_arb":         0.5,   # 30-min arb-persistence check
     "micro_spread_scalp": 2,     # same market-neutral window as spread_harvesting
 }
@@ -39,34 +37,6 @@ def _resolve_spread(signal: dict, current_snapshot: dict):
     price_move = abs(exit_price - entry_price)
     outcome    = price_move <= net_spread * 0.5
     pnl        = net_spread if outcome else -price_move
-    return outcome, round(exit_price, 4), round(pnl, 6)
-
-
-def _resolve_reversion(signal: dict, current_snapshot: dict):
-    """
-    Reversion wins if the price moved back from the sharp-move direction.
-    Direction and entry price are read from signal metadata price_move block.
-    PnL = directional difference (entry_price - exit_price) or reverse.
-    """
-    meta       = signal.get("metadata") or {}
-    price_move = meta.get("price_move") or {}
-    if isinstance(price_move, str):
-        try:
-            price_move = json.loads(price_move)
-        except Exception:
-            price_move = {}
-
-    entry_price = float(price_move.get("end_price") or signal.get("entry_price") or 0)
-    direction   = price_move.get("direction", "up")
-    exit_price  = float(current_snapshot.get("yes_price") or entry_price)
-
-    if direction == "up":
-        outcome = exit_price < entry_price
-        pnl     = entry_price - exit_price
-    else:
-        outcome = exit_price > entry_price
-        pnl     = exit_price - entry_price
-
     return outcome, round(exit_price, 4), round(pnl, 6)
 
 
@@ -187,14 +157,6 @@ def run():
                         skipped_total += 1
                         continue
                     outcome, exit_price, pnl = _resolve_spread(
-                        signal, snapshots_by_market[market_id]
-                    )
-
-                elif strategy == "mean_reversion":
-                    if not market_id or market_id not in snapshots_by_market:
-                        skipped_total += 1
-                        continue
-                    outcome, exit_price, pnl = _resolve_reversion(
                         signal, snapshots_by_market[market_id]
                     )
 

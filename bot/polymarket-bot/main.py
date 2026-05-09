@@ -1,5 +1,5 @@
 # main.py — run the full pipeline once
-# Order: schema init → scanner → collector → [spread, neg_risk, reversion] → outcome_tracker
+# Order: schema init → scanner → collector → [spread, neg_risk, micro_spread, tail_yield, binary_arb, odds_shift] → outcome_tracker
 
 import glob
 import json
