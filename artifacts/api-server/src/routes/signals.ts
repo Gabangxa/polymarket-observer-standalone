@@ -35,7 +35,7 @@ router.get("/signals", async (req, res) => {
     const hours = Math.min(Number(req.query.hours) || 24, 168);
     const limit = Math.min(Number(req.query.limit) || 100, 500);
 
-    const cutoff = sql`NOW() - INTERVAL '${sql.raw(String(hours))} hours'`;
+    const cutoff = sql`NOW() - ${hours} * INTERVAL '1 hour'`;
 
     const conditions = [gt(signalsTable.emittedAt, cutoff)];
     if (strategy) {

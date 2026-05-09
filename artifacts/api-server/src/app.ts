@@ -5,6 +5,7 @@ import path from "path";
 import { existsSync } from "fs";
 import router from "./routes";
 import { logger } from "./lib/logger";
+import { requireApiKey } from "./middlewares/auth";
 
 const app: Express = express();
 
@@ -31,6 +32,11 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+app.use("/api", (req, res, next) => {
+  const mutating = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method);
+  if (mutating) return requireApiKey(req, res, next);
+  next();
+});
 app.use("/api", router);
 
 // Serve the dashboard SPA in production (static files built by dashboard artifact)

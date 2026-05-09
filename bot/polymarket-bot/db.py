@@ -409,7 +409,7 @@ def get_recent_signals(strategy: str = None, hours: int = 24, limit: int = 100) 
                     SELECT s.*, m.question
                     FROM signals s
                     LEFT JOIN markets m ON m.market_id = s.market_id
-                    WHERE s.emitted_at > NOW() - INTERVAL '%s hours'
+                    WHERE s.emitted_at > NOW() - (%s * INTERVAL '1 hour')
                     ORDER BY s.emitted_at DESC
                     LIMIT %s
                 """, (hours, limit))
