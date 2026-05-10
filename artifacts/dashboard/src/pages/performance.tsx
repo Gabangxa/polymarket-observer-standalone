@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { motion } from "framer-motion";
-import { TrendingUp, Trophy, BarChart3, AlertTriangle } from "lucide-react";
+import { TrendingUp, Trophy, BarChart3, AlertTriangle, DollarSign } from "lucide-react";
 import {
   BarChart,
   Bar,
@@ -17,16 +18,29 @@ import { useTimezone } from "@/hooks/use-timezone";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+const BET_SIZE_KEY = "pm_bet_size";
+const BET_SIZE_DEFAULT = 100;
+
+function loadBetSize(): number {
+  try {
+    const v = localStorage.getItem(BET_SIZE_KEY);
+    const n = v ? parseFloat(v) : NaN;
+    return isFinite(n) && n > 0 ? n : BET_SIZE_DEFAULT;
+  } catch {
+    return BET_SIZE_DEFAULT;
+  }
+}
+
 function fmtWinRate(rate: number | string | null | undefined): string {
   if (rate === null || rate === undefined) return "—";
   const n = parseNumeric(rate);
   return `${(n * 100).toFixed(1)}%`;
 }
 
-function fmtPnl(pnl: number | string | null | undefined): string {
+function fmtDollarPnl(pnl: number | string | null | undefined, betSize: number): string {
   if (pnl === null || pnl === undefined) return "—";
-  const n = parseNumeric(pnl);
-  return n >= 0 ? `+${n.toFixed(4)}` : n.toFixed(4);
+  const n = parseNumeric(pnl) * betSize;
+  return n >= 0 ? `+$${n.toFixed(2)}` : `-$${Math.abs(n).toFixed(2)}`;
 }
 
 function winRateColor(rate: number | string | null | undefined): string {
@@ -72,6 +86,8 @@ export default function Performance() {
   const { data: perf, isLoading: perfLoading, isError: perfError } = useStrategyPerformance();
   const { data: signalsData, isLoading: signalsLoading } = useLiveSignals({ hours: 168, limit: 500 });
 
+  const [betSize, setBetSize] = useState<number>(loadBetSize);
+
   const trendData = signalsData ? buildTrend(signalsData.signals, timezone) : [];
 
   // Aggregate totals for summary cards
@@ -79,6 +95,14 @@ export default function Performance() {
   const totalResolved  = perf?.strategies.reduce((a, s) => a + s.resolvedCount, 0) ?? 0;
   const totalWins      = perf?.strategies.reduce((a, s) => a + s.winCount, 0) ?? 0;
   const overallWinRate = totalResolved > 0 ? totalWins / totalResolved : null;
+  const totalEstPnl    = perf?.strategies.reduce((sum, s) => sum + (parseNumeric(s.avgPnl) * s.resolvedCount * betSize), 0) ?? null;
+
+  function handleBetSize(raw: string) {
+    const n = parseFloat(raw);
+    if (!isFinite(n) || n <= 0) return;
+    setBetSize(n);
+    try { localStorage.setItem(BET_SIZE_KEY, String(n)); } catch {}
+  }
 
   return (
     <motion.div
@@ -87,13 +111,30 @@ export default function Performance() {
       className="space-y-6 pb-12"
     >
       {/* Header */}
-      <div className="flex items-center gap-3 mb-2">
-        <TrendingUp className="text-primary" size={24} />
-        <div>
-          <h2 className="text-2xl font-bold tracking-tight">Strategy Performance</h2>
-          <p className="text-sm text-muted-foreground font-mono mt-0.5">
-            Outcome tracking across all resolved paper-trade signals
-          </p>
+      <div className="flex items-start justify-between gap-4 mb-2">
+        <div className="flex items-center gap-3">
+          <TrendingUp className="text-primary" size={24} />
+          <div>
+            <h2 className="text-2xl font-bold tracking-tight">Strategy Performance</h2>
+            <p className="text-sm text-muted-foreground font-mono mt-0.5">
+              Outcome tracking across all resolved paper-trade signals
+            </p>
+          </div>
+        </div>
+
+        {/* Bet size control */}
+        <div className="flex items-center gap-2 bg-muted/40 border border-border rounded-lg px-3 py-2 shrink-0">
+          <DollarSign size={14} className="text-muted-foreground" />
+          <span className="text-xs font-mono text-muted-foreground whitespace-nowrap">Bet size</span>
+          <input
+            type="number"
+            min={1}
+            step={10}
+            value={betSize}
+            onChange={(e) => handleBetSize(e.target.value)}
+            className="w-20 bg-transparent text-sm font-mono text-foreground text-right focus:outline-none focus:ring-1 focus:ring-primary rounded px-1"
+          />
+          <span className="text-xs font-mono text-muted-foreground">USDC</span>
         </div>
       </div>
 
@@ -106,7 +147,12 @@ export default function Performance() {
           value={fmtWinRate(overallWinRate)}
           className={overallWinRate !== null && overallWinRate >= 0.5 ? "border-success/30 bg-success/5" : "border-destructive/30 bg-destructive/5"}
         />
-        <StatCard title="Wins"            value={totalWins.toString()} subtitle={`of ${totalResolved} resolved`} />
+        <StatCard
+          title="Est. Total P&L"
+          value={totalEstPnl !== null ? (totalEstPnl >= 0 ? `+$${totalEstPnl.toFixed(2)}` : `-$${Math.abs(totalEstPnl).toFixed(2)}`) : "—"}
+          subtitle={`@ $${betSize} / signal`}
+          className={totalEstPnl !== null && totalEstPnl >= 0 ? "border-success/30 bg-success/5" : "border-destructive/30 bg-destructive/5"}
+        />
       </div>
 
       {/* Strategy scorecard */}
@@ -123,7 +169,7 @@ export default function Performance() {
                 <th className="px-4 py-3 font-medium text-right">Resolved</th>
                 <th className="px-4 py-3 font-medium text-right">Wins</th>
                 <th className="px-4 py-3 font-medium text-right">Win Rate</th>
-                <th className="px-4 py-3 font-medium text-right">Avg PnL</th>
+                <th className="px-4 py-3 font-medium text-right">Avg PnL (USDC)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/50">
@@ -159,7 +205,7 @@ export default function Performance() {
                       {fmtWinRate(row.winRate)}
                     </td>
                     <td className={`px-4 py-4 text-right font-mono ${row.avgPnl !== null && row.avgPnl >= 0 ? "text-success" : "text-destructive"}`}>
-                      {fmtPnl(row.avgPnl)}
+                      {fmtDollarPnl(row.avgPnl, betSize)}
                     </td>
                   </tr>
                 ))
@@ -241,7 +287,7 @@ export default function Performance() {
                 <th className="px-4 py-3 font-medium text-right">Signals</th>
                 <th className="px-4 py-3 font-medium text-right">Resolved</th>
                 <th className="px-4 py-3 font-medium text-right">Win Rate</th>
-                <th className="px-4 py-3 font-medium text-right">Avg PnL</th>
+                <th className="px-4 py-3 font-medium text-right">Avg PnL (USDC)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/50">
@@ -270,7 +316,7 @@ export default function Performance() {
                       {fmtWinRate(row.winRate)}
                     </td>
                     <td className={`px-4 py-4 text-right font-mono ${row.avgPnl !== null && row.avgPnl >= 0 ? "text-success" : "text-destructive"}`}>
-                      {fmtPnl(row.avgPnl)}
+                      {fmtDollarPnl(row.avgPnl, betSize)}
                     </td>
                   </tr>
                 ))
