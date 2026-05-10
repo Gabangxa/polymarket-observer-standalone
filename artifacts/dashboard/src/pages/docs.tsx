@@ -124,7 +124,7 @@ export default function Docs() {
             {
               step: "2",
               title: "Collect & analyse",
-              body: "Every 5 minutes it snapshots each watched market — prices, spread, open interest, price history — and runs three strategy engines against the data.",
+              body: "Every 5 minutes it snapshots each watched market — prices, spread, open interest, price history — and runs six strategy engines against the data.",
               icon: Activity,
             },
             {
@@ -187,7 +187,7 @@ export default function Docs() {
               color: "text-success",
               summary: "Did the signals actually work?",
               detail:
-                "Scorecard shows win rate and average PnL per strategy across all resolved signals. The accuracy trend bar chart shows daily win rates — green bars are days above 50%, red below. The category breakdown shows which market types (politics, crypto, sports…) each strategy performs best on.",
+                "Scorecard shows win rate and average PnL per strategy across all resolved signals — in real USDC amounts based on your configured bet size. Use the bet size input (top-right of the page) to set your notional stake per signal; the Est. Total P&L card updates instantly. The accuracy trend bar chart shows daily win rates — green bars are days above 50%, red below. The category breakdown shows which market types (politics, crypto, sports…) each strategy performs best on.",
             },
             {
               href: "/snapshots",
@@ -435,9 +435,9 @@ export default function Docs() {
               note: "≥60% is strong. 40–60% is normal. <40% suggests the signal logic needs tuning.",
             },
             {
-              term: "Avg PnL",
-              def: "Average paper profit/loss per resolved signal, in price units (¢ per $1 contract). A strategy can have <50% win rate but still be profitable if wins are larger than losses.",
-              note: "A positive avg PnL with ≥40% win rate is the target profile.",
+              term: "Avg PnL (USDC)",
+              def: "Average paper profit/loss per resolved signal in USDC, calculated as the raw price-fraction PnL multiplied by your configured bet size. A strategy can have <50% win rate but still be profitable if wins are larger than losses.",
+              note: "A positive avg PnL with ≥40% win rate is the target profile. Change the bet size on the Performance page to model different position sizes.",
             },
             {
               term: "Signal Count",
@@ -484,7 +484,7 @@ export default function Docs() {
           </FaqItem>
 
           <FaqItem q="What does 'score' actually mean — is higher always better?">
-            Generally yes, but the scale differs per strategy. For <strong>spread_harvesting</strong> and <strong>mean_reversion</strong> it's 0–1 (fraction of spread that's profit / price delta magnitude). For <strong>neg_risk</strong> it's the raw overround (0.05 = 5¢ edge). Don't compare scores across strategies — compare within a strategy over time.
+            Generally yes, but the scale differs per strategy. For <strong>spread_harvesting</strong> and <strong>mean_reversion</strong> it's 0–1 (fraction of spread that's profit / price delta magnitude). For <strong>neg_risk_overround</strong> it's the raw overround (0.05 = 5¢ edge across all legs). For <strong>micro_spread_scalp</strong> it's spread ÷ 0.10, capped at 1.0. For <strong>tail_yield_harvest</strong> it's the annualised yield percentage ÷ 5. For <strong>binary_arb</strong> it's guaranteed profit ÷ 0.05 (5¢ profit = score of 1.0). Don't compare scores across strategies — compare within a strategy over time.
           </FaqItem>
 
           <FaqItem q="Why is my win rate blank / showing '—'?">
@@ -505,6 +505,10 @@ export default function Docs() {
 
           <FaqItem q="I see 'No signals match the current filter' — is the bot working?">
             Most likely yes. The signals table defaults to the last 24 hours. If the bot only started recently, or if no markets crossed the strategy thresholds in the last cycle, the table will be empty. Check the Overview page — if Data Snapshots is increasing over time, collection is working. You can also switch the filter to ALL and extend the window.
+          </FaqItem>
+
+          <FaqItem q="What is the bet size input on the Performance page?">
+            The bet size (top-right of the Performance page, default $100) is a notional position size used to convert raw PnL fractions into real USDC dollar figures. For example, a raw PnL of +0.032 on a $100 bet = <strong>+$3.20</strong>. It affects the Avg PnL (USDC) columns in both tables and the Est. Total P&L summary card. The value is saved in your browser's local storage so it persists between sessions.
           </FaqItem>
 
         </div>
