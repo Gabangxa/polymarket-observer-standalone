@@ -74,3 +74,77 @@ def zero_signal_streak(engine: str, streak: int, last_signal_at: str | None,
         f"{streak} consecutive runs (~{elapsed_min} min) with no signals.\n"
         f"Last signal: `{last}`"
     )
+
+
+# ── Execution alerts ──────────────────────────────────────────────────────────
+
+def order_placed(
+    strategy: str,
+    market_id: str,
+    question: str,
+    clord_id: str,
+    price: float,
+    size_usdc: float,
+) -> None:
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    q  = (question or market_id)[:60]
+    _send(
+        f":green_circle: **Order placed** | `{strategy}` | {ts}\n"
+        f"`{q}`\n"
+        f"YES @ {price:.3f} | Size: ${size_usdc:.2f} USDC | `{clord_id}`"
+    )
+
+
+def order_filled(
+    strategy: str,
+    market_id: str,
+    clord_id: str,
+    filled_qty: float,
+    fill_price: float,
+) -> None:
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    _send(
+        f":white_check_mark: **Order filled** | `{strategy}` | {ts}\n"
+        f"Market: `{market_id[:40]}`\n"
+        f"Filled: {filled_qty:.4f} shares @ {fill_price:.3f} | `{clord_id}`"
+    )
+
+
+def order_rejected(
+    strategy: str,
+    market_id: str,
+    question: str,
+    clord_id: str,
+    error: str,
+) -> None:
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    q  = (question or market_id)[:60]
+    _send(
+        f":red_circle: **Order rejected** | `{strategy}` | {ts}\n"
+        f"`{q}`\n"
+        f"Error: `{str(error)[:200]}` | `{clord_id}`"
+    )
+
+
+def executor_paused() -> None:
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    _send(
+        f":pause_button: **Executor PAUSED** | {ts}\n"
+        f"New signal processing halted. Fill polling continues."
+    )
+
+
+def executor_resumed() -> None:
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    _send(f":arrow_forward: **Executor RESUMED** | {ts} — signal processing active.")
+
+
+def cancel_all_fired(summary: dict) -> None:
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    _send(
+        f":stop_sign: **Cancel-all executed** | {ts}\n"
+        f"Attempted: {summary['attempted']} | "
+        f"Succeeded: {summary['succeeded']} | "
+        f"Failed: {summary['failed']} | "
+        f"DB-only: {summary['db_only']}"
+    )

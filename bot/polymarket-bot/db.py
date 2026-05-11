@@ -182,6 +182,66 @@ ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS no_ask NUMERIC;
 -- single atomic INSERT ... ON CONFLICT DO NOTHING.
 CREATE UNIQUE INDEX IF NOT EXISTS signals_dedup_hourly
     ON signals (strategy, COALESCE(market_id, event_slug), date_trunc('hour', emitted_at));
+
+-- Execution tracking
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS executed BOOLEAN DEFAULT FALSE;
+
+CREATE INDEX IF NOT EXISTS signals_executable
+    ON signals (executed, signal_score, emitted_at)
+    WHERE executed = FALSE;
+
+CREATE TABLE IF NOT EXISTS orders (
+    id                BIGSERIAL PRIMARY KEY,
+    clord_id          TEXT UNIQUE NOT NULL,
+    signal_id         BIGINT REFERENCES signals(id),
+    market_id         TEXT NOT NULL,
+    token_id          TEXT NOT NULL,
+    side              TEXT NOT NULL,
+    price             NUMERIC NOT NULL,
+    size_usdc         NUMERIC NOT NULL,
+    strategy          TEXT NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'PENDING_SUBMISSION',
+    exchange_order_id TEXT,
+    working_qty       NUMERIC DEFAULT 0,
+    filled_qty        NUMERIC DEFAULT 0,
+    fill_price        NUMERIC,
+    submitted_at      TIMESTAMPTZ,
+    filled_at         TIMESTAMPTZ,
+    canceled_at       TIMESTAMPTZ,
+    error_msg         TEXT,
+    created_at        TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS orders_status
+    ON orders (status, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS orders_signal
+    ON orders (signal_id);
+
+-- GTD and reprice tracking (added with GTD/reprice implementation)
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS expiration_ts  TIMESTAMPTZ;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS reprice_of     BIGINT REFERENCES orders(id);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS repriced       BOOLEAN DEFAULT FALSE;
+
+CREATE INDEX IF NOT EXISTS orders_reprice_candidates
+    ON orders (status, repriced, expiration_ts)
+    WHERE status = 'CANCELED' AND repriced = FALSE;
+
+CREATE TABLE IF NOT EXISTS positions (
+    id            BIGSERIAL PRIMARY KEY,
+    market_id     TEXT NOT NULL,
+    token_id      TEXT NOT NULL,
+    side          TEXT NOT NULL,
+    total_bought  NUMERIC DEFAULT 0,
+    total_sold    NUMERIC DEFAULT 0,
+    working_buy   NUMERIC DEFAULT 0,
+    working_sell  NUMERIC DEFAULT 0,
+    avg_cost      NUMERIC,
+    pnl_realized  NUMERIC DEFAULT 0,
+    pnl_open      NUMERIC DEFAULT 0,
+    last_updated  TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (market_id, token_id, side)
+);
 """
 
 
@@ -638,6 +698,305 @@ def get_snapshot_pairs(min_hours: float = 0.25, max_hours: float = 2.0) -> list[
                 JOIN reference r  ON l.market_id = r.market_id
                 JOIN markets m    ON l.market_id = m.market_id
             """, {"min_h": min_hours, "max_h": max_hours})
+            return [dict(r) for r in cur.fetchall()]
+
+
+# ── orders table ─────────────────────────────────────────────────────────────
+
+def insert_order(order: dict) -> int:
+    """
+    Insert a new order row. Returns the new row id.
+    Raises IntegrityError if clord_id already exists (duplicate guard).
+    """
+    sql = """
+        INSERT INTO orders (
+            clord_id, signal_id, market_id, token_id, side,
+            price, size_usdc, strategy, status,
+            expiration_ts, reprice_of
+        ) VALUES (
+            %(clord_id)s, %(signal_id)s, %(market_id)s, %(token_id)s, %(side)s,
+            %(price)s, %(size_usdc)s, %(strategy)s, 'PENDING_SUBMISSION',
+            %(expiration_ts)s, %(reprice_of)s
+        )
+        RETURNING id
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, order)
+            return cur.fetchone()["id"]
+
+
+def update_order_status(
+    clord_id: str,
+    status: str,
+    *,
+    exchange_order_id: str = None,
+    working_qty: float = None,
+    filled_qty: float = None,
+    fill_price: float = None,
+    error_msg: str = None,
+    submitted_at=None,
+    filled_at=None,
+    canceled_at=None,
+) -> None:
+    """Update order state. Only non-None kwargs are written."""
+    fields = ["status = %(status)s"]
+    params: dict = {"clord_id": clord_id, "status": status}
+
+    if exchange_order_id is not None:
+        fields.append("exchange_order_id = %(exchange_order_id)s")
+        params["exchange_order_id"] = exchange_order_id
+    if working_qty is not None:
+        fields.append("working_qty = %(working_qty)s")
+        params["working_qty"] = working_qty
+    if filled_qty is not None:
+        fields.append("filled_qty = %(filled_qty)s")
+        params["filled_qty"] = filled_qty
+    if fill_price is not None:
+        fields.append("fill_price = %(fill_price)s")
+        params["fill_price"] = fill_price
+    if error_msg is not None:
+        fields.append("error_msg = %(error_msg)s")
+        params["error_msg"] = error_msg
+    if submitted_at is not None:
+        fields.append("submitted_at = %(submitted_at)s")
+        params["submitted_at"] = submitted_at
+    if filled_at is not None:
+        fields.append("filled_at = %(filled_at)s")
+        params["filled_at"] = filled_at
+    if canceled_at is not None:
+        fields.append("canceled_at = %(canceled_at)s")
+        params["canceled_at"] = canceled_at
+
+    sql = f"UPDATE orders SET {', '.join(fields)} WHERE clord_id = %(clord_id)s"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+
+
+def get_open_orders() -> list[dict]:
+    """Return all orders in a non-terminal state (for fill polling)."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT * FROM orders
+                WHERE status IN ('PENDING_SUBMISSION', 'SENT', 'OPEN', 'PARTIALLY_FILLED')
+                ORDER BY created_at ASC
+            """)
+            return [dict(r) for r in cur.fetchall()]
+
+
+def order_exists_for_signal(signal_id: int) -> bool:
+    """Return True if any order (any status) was already created for this signal."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM orders WHERE signal_id = %s LIMIT 1",
+                (signal_id,),
+            )
+            return cur.fetchone() is not None
+
+
+def mark_signal_executed(signal_id: int) -> None:
+    """Mark a signal as handed off to the executor."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE signals SET executed = TRUE WHERE id = %s",
+                (signal_id,),
+            )
+
+
+def get_executable_signals(
+    min_score: float,
+    strategies: list[str],
+    max_age_secs: int,
+    limit: int = 20,
+) -> list[dict]:
+    """
+    Return unexecuted signals that are fresh, high-score, and in an allowed strategy.
+    Ordered by signal_score DESC so the best opportunities are processed first.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT s.*, m.token_ids, m.outcomes
+                FROM signals s
+                LEFT JOIN markets m ON m.market_id = s.market_id
+                WHERE s.executed = FALSE
+                  AND s.signal_score >= %(min_score)s
+                  AND s.strategy = ANY(%(strategies)s)
+                  AND s.emitted_at > NOW() - (%(max_age_secs)s * INTERVAL '1 second')
+                ORDER BY s.signal_score DESC
+                LIMIT %(limit)s
+            """, {
+                "min_score": min_score,
+                "strategies": strategies,
+                "max_age_secs": max_age_secs,
+                "limit": limit,
+            })
+            rows = []
+            for r in cur.fetchall():
+                row = dict(r)
+                if isinstance(row.get("metadata"), str):
+                    try:
+                        row["metadata"] = json.loads(row["metadata"])
+                    except Exception:
+                        row["metadata"] = {}
+                rows.append(row)
+            return rows
+
+
+# ── positions table ───────────────────────────────────────────────────────────
+
+def upsert_position(
+    market_id: str,
+    token_id: str,
+    side: str,
+    *,
+    delta_bought: float = 0,
+    delta_sold: float = 0,
+    delta_working_buy: float = 0,
+    delta_working_sell: float = 0,
+    avg_cost: float = None,
+    pnl_realized_delta: float = 0,
+) -> None:
+    """
+    Create or update a position row by applying deltas.
+    All quantity changes are additive so concurrent updates don't race.
+    avg_cost is only written when explicitly provided (on fill).
+    """
+    params: dict = {
+        "market_id": market_id,
+        "token_id": token_id,
+        "side": side,
+        "delta_bought": delta_bought,
+        "delta_sold": delta_sold,
+        "delta_working_buy": delta_working_buy,
+        "delta_working_sell": delta_working_sell,
+        "pnl_realized_delta": pnl_realized_delta,
+        "avg_cost": avg_cost,
+    }
+    avg_cost_clause = (
+        "avg_cost = %(avg_cost)s,"
+        if avg_cost is not None
+        else ""
+    )
+    sql = f"""
+        INSERT INTO positions (market_id, token_id, side, total_bought, total_sold,
+            working_buy, working_sell, avg_cost, pnl_realized, last_updated)
+        VALUES (%(market_id)s, %(token_id)s, %(side)s,
+            %(delta_bought)s, %(delta_sold)s,
+            %(delta_working_buy)s, %(delta_working_sell)s,
+            %(avg_cost)s, %(pnl_realized_delta)s, NOW())
+        ON CONFLICT (market_id, token_id, side) DO UPDATE SET
+            total_bought  = positions.total_bought  + %(delta_bought)s,
+            total_sold    = positions.total_sold    + %(delta_sold)s,
+            working_buy   = positions.working_buy   + %(delta_working_buy)s,
+            working_sell  = positions.working_sell  + %(delta_working_sell)s,
+            {avg_cost_clause}
+            pnl_realized  = positions.pnl_realized  + %(pnl_realized_delta)s,
+            last_updated  = NOW()
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+
+
+def get_position(market_id: str, token_id: str, side: str) -> dict | None:
+    """Return a single position row or None if no position exists."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT * FROM positions
+                WHERE market_id = %s AND token_id = %s AND side = %s
+            """, (market_id, token_id, side))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def get_total_open_exposure() -> float:
+    """
+    Sum of size_usdc across all non-terminal and filled-but-held orders.
+    Used by the pre-trade gate to enforce the portfolio exposure cap.
+    The 8-day window covers the max market lifetime (168h) plus buffer.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COALESCE(SUM(size_usdc), 0) AS total
+                FROM orders
+                WHERE status IN (
+                    'PENDING_SUBMISSION', 'SENT', 'OPEN',
+                    'PARTIALLY_FILLED', 'FILLED'
+                )
+                AND created_at > NOW() - INTERVAL '8 days'
+            """)
+            return float(cur.fetchone()["total"])
+
+
+def get_expired_unfilled_orders() -> list[dict]:
+    """
+    Return CANCELED orders with no fills that were GTD-expired (not user-canceled)
+    and have not yet been repriced. Joined with markets for hours_to_close.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT o.*, m.token_ids, m.hours_to_close, m.question, m.tags
+                FROM orders o
+                LEFT JOIN markets m ON m.market_id = o.market_id
+                WHERE o.status = 'CANCELED'
+                  AND (o.filled_qty IS NULL OR o.filled_qty = 0)
+                  AND o.repriced = FALSE
+                  AND o.expiration_ts IS NOT NULL
+                  AND o.expiration_ts <= NOW()
+            """)
+            return [dict(r) for r in cur.fetchall()]
+
+
+def mark_order_repriced(order_id: int) -> None:
+    """Mark an order as repriced so it is not picked up again next cycle."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE orders SET repriced = TRUE WHERE id = %s",
+                (order_id,),
+            )
+
+
+def get_snapshot_for_reprice(market_id: str) -> dict | None:
+    """
+    Latest snapshot for a single market, including hours_to_close from markets.
+    Used by the executor's reprice evaluator.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT ON (s.market_id)
+                    s.*,
+                    m.question, m.event_slug, m.tags,
+                    m.neg_risk, m.hours_to_close
+                FROM snapshots s
+                JOIN markets m ON m.market_id = s.market_id
+                WHERE s.market_id = %s
+                ORDER BY s.market_id, s.collected_at DESC
+            """, (market_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def get_all_open_positions() -> list[dict]:
+    """Return all positions with non-zero net exposure or working qty."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT * FROM positions
+                WHERE (total_bought - total_sold) != 0
+                   OR working_buy != 0
+                   OR working_sell != 0
+                ORDER BY last_updated DESC
+            """)
             return [dict(r) for r in cur.fetchall()]
 
 

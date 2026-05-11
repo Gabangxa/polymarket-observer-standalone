@@ -82,6 +82,74 @@ def watchlist():
         return jsonify({"error": str(e)}), 500
 
 
+# ── Execution kill switches ───────────────────────────────────────────────────
+
+@app.route("/execution/status")
+def execution_status():
+    """Current execution state: pause flag + open order count."""
+    try:
+        from execution import executor
+        paused = executor.is_paused()
+    except Exception:
+        paused = None   # executor not running
+
+    try:
+        open_orders = db.get_open_orders()
+        open_count  = len(open_orders)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify({
+        "paused":      paused,
+        "open_orders": open_count,
+        "timestamp":   datetime.now(timezone.utc).isoformat(),
+    })
+
+
+@app.route("/execution/pause", methods=["POST"])
+def execution_pause():
+    """Halt new signal processing. Fill polling continues."""
+    try:
+        from execution import executor
+        executor.pause()
+        return jsonify({"status": "paused", "timestamp": datetime.now(timezone.utc).isoformat()})
+    except Exception as e:
+        logger.error(f"/execution/pause failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/execution/resume", methods=["POST"])
+def execution_resume():
+    """Resume signal processing after a pause."""
+    try:
+        from execution import executor
+        executor.resume()
+        return jsonify({"status": "running", "timestamp": datetime.now(timezone.utc).isoformat()})
+    except Exception as e:
+        logger.error(f"/execution/resume failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/execution/cancel-all", methods=["POST"])
+def execution_cancel_all():
+    """
+    Cancel every open CLOB order. Safe to call while paused or running.
+    Returns a cancel summary. Requires POLYGON_PRIVATE_KEY to be set.
+    """
+    try:
+        from execution.auth import get_client
+        from execution.order_manager import cancel_all_open_orders
+        client  = get_client()
+        summary = cancel_all_open_orders(client)
+        return jsonify({**summary, "timestamp": datetime.now(timezone.utc).isoformat()})
+    except RuntimeError as e:
+        # get_client() raises RuntimeError if POLYGON_PRIVATE_KEY is missing
+        return jsonify({"error": str(e)}), 503
+    except Exception as e:
+        logger.error(f"/execution/cancel-all failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 # ── Background thread launcher ────────────────────────────────────────────────
 
 def start_server(host: str = "0.0.0.0", port: int = 8080) -> threading.Thread:

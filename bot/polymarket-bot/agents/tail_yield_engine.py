@@ -54,7 +54,7 @@ def run():
         score     = min(yield_pct / 5.0, 1.0)
 
         signal = {
-            "strategy":        "tail_yield_harvest",
+            "strategy":        "tail_yield_engine",
             "market_id":       snap["market_id"],
             "event_slug":      snap.get("event_slug"),
             "signal_score":    round(score, 4),
