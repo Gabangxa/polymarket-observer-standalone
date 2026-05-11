@@ -105,15 +105,29 @@ ARB_MIN_NET_MARGIN      = 0.015  # Require a guaranteed 1.5% net profit after ca
 # Remove the static ARB_THRESHOLD. Let the engine calculate: 
 # Target Threshold = 1.0 - (FEE_RATES[category][0] + ARB_MIN_NET_MARGIN)
 
-# ── Webhook dispatcher ────────────────────────────────────────────────────────
-# Set SIGNAL_WEBHOOK_URL in Railway UI (bot service variables) — never hardcode
-SIGNAL_WEBHOOK_URL      = os.environ.get("SIGNAL_WEBHOOK_URL", "")
+# ── Execution layer — risk and strategy parameters ────────────────────────────
+# These are code, not config. Change via git commit, not Railway dashboard.
+# Capital allocation decisions must have an audit trail.
+BANKROLL_USDC         = 0.0    # USDC allocated to execution — set this before first deploy
+MAX_POSITION_PCT      = 0.10   # max fraction of bankroll per single position
+MAX_PORTFOLIO_PCT     = 0.33   # max fraction of bankroll open across all positions
+MAX_SIGNAL_AGE_SECS   = 60     # reject signals older than this (seconds)
+ORDER_MAX_RETRIES     = 5      # exponential backoff attempts before REJECTED
+EXECUTOR_POLL_SECS    = 10     # fallback poll interval (NATS fast-path is faster)
+EXECUTION_STRATEGIES  = ["spread_engine", "tail_yield_engine"]
+EXECUTION_MIN_SCORE   = 0.75   # minimum signal score to execute
 
-# ── NATS messaging bus ────────────────────────────────────────────────────────
-# Set NATS_URL in Railway UI. Leave blank to run without NATS (all publishes are no-ops).
-# EXECUTION_MIN_SCORE: minimum signal_score for signal_router to forward to pm.execution.queue
+# GTD order lifetimes (seconds). Polymarket enforces a 60s minimum buffer on top.
+ORDER_TTL_SPREAD_SECS = 600    # spread_engine: 10 min — stale quote = no edge
+ORDER_TTL_TAIL_SECS   = 3600   # tail_yield_engine: 60 min — near-certain prices move slowly
+
+# ── Infrastructure — set in Railway service variables, never in code ──────────
+# POLYGON_PRIVATE_KEY  — L1 wallet key               (read in execution/auth.py)
+# NATS_URL             — NATS server endpoint         (read in nats_bus.py)
+# SIGNAL_WEBHOOK_URL   — external HTTP webhook        (read in webhook_dispatcher.py)
+# POLYMARKET_CHAIN_ID  — 137 mainnet / 80002 testnet  (read in execution/auth.py)
+SIGNAL_WEBHOOK_URL      = os.environ.get("SIGNAL_WEBHOOK_URL", "")
 NATS_URL                = os.environ.get("NATS_URL", "")
-EXECUTION_MIN_SCORE     = float(os.environ.get("EXECUTION_MIN_SCORE", "0.75"))
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_RETENTION_DAYS      = 14   # delete log files older than this many days

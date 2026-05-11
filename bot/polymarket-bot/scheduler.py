@@ -50,6 +50,24 @@ def main():
     port = int(os.environ.get("BOT_PORT", 5001))
     start_server(host="0.0.0.0", port=port)
 
+    # Start execution layer — polls signals table and places CLOB orders.
+    # Gate: POLYGON_PRIVATE_KEY must be set in Railway service variables.
+    # BANKROLL_USDC is set in config.py — update it there before deploying.
+    from config import BANKROLL_USDC
+    if os.environ.get("POLYGON_PRIVATE_KEY"):
+        from execution.executor import start_executor
+        start_executor()
+        if BANKROLL_USDC <= 0:
+            logger.warning(
+                "Executor started but BANKROLL_USDC = 0 in config.py — "
+                "all orders will be rejected at pre-trade gate until this is set."
+            )
+    else:
+        logger.warning(
+            "Executor NOT started — set POLYGON_PRIVATE_KEY in Railway service variables "
+            "to enable live execution."
+        )
+
     run_count = 0
 
     while True:
