@@ -4,7 +4,7 @@
 #
 # Covers:
 #   odds_shift         — directional: direction field determines correct outcome
-#   tail_yield_harvest — YES bet: always correct when resolved YES
+#   tail_yield_engine — YES bet: always correct when resolved YES
 #
 # Skips: spread_harvesting, neg_risk_overround, binary_arb, micro_spread_scalp
 #   (those are handled by outcome_tracker's snapshot-comparison window)
@@ -20,7 +20,7 @@ import db
 logger = logging.getLogger(__name__)
 
 DIRECTIONAL_STRATEGIES = {"odds_shift"}
-TAIL_STRATEGIES        = {"tail_yield_harvest"}
+TAIL_STRATEGIES        = {"tail_yield_engine"}
 
 
 def _resolution_price(market_data: dict) -> float | None:
@@ -42,7 +42,7 @@ def _signal_correct(signal: dict, resolved_yes: bool) -> bool | None:
     strategy = signal.get("strategy")
 
     # Tail yield is always a YES bet — no direction field needed
-    if strategy == "tail_yield_harvest":
+    if strategy == "tail_yield_engine":
         return resolved_yes
 
     meta      = signal.get("metadata") or {}
@@ -118,7 +118,7 @@ def run() -> dict:
         meta       = signal.get("metadata") or {}
         exit_price = float(resolution_price)
 
-        if signal.get("strategy") == "tail_yield_harvest":
+        if signal.get("strategy") == "tail_yield_engine":
             # Tail yield: bought YES at current_price, resolved at 1.0 or 0.0
             entry_price = float(meta.get("current_price") or 0)
             pnl = exit_price - entry_price

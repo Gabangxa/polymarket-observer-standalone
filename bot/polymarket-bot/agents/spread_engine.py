@@ -47,7 +47,7 @@ def _analyse_snapshot(snapshot):
             return None
         signal_score = min(spread_f / 0.10, 1.0)
         return {
-            "strategy":       "spread_harvesting",
+            "strategy":       "spread_engine",
             "market_id":      snapshot["market_id"],
             "event_slug":     snapshot.get("event_slug"),
             "question":       snapshot.get("question"),
@@ -80,7 +80,7 @@ def _analyse_snapshot(snapshot):
         return None
 
     return {
-        "strategy":       "spread_harvesting",
+        "strategy":       "spread_engine",
         "market_id":      snapshot["market_id"],
         "event_slug":     snapshot.get("event_slug"),
         "question":       snapshot.get("question"),

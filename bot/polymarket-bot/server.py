@@ -4,22 +4,45 @@
 # This runs in a background thread alongside the scheduler.
 #
 # Endpoints:
-#   GET /          — simple alive check (Replit pings this)
-#   GET /health    — JSON health status + DB stats
-#   GET /signals   — last 24h signals (all strategies)
-#   GET /watchlist — current watched markets
+#   GET  /                   — simple alive check (Replit pings this)
+#   GET  /health             — JSON health status + DB stats
+#   GET  /signals            — last 24h signals (all strategies)
+#   GET  /watchlist          — current watched markets
+#   POST /execution/pause    — halt signal processing  (requires X-API-Key: BOT_API_KEY)
+#   POST /execution/resume   — resume signal processing (requires X-API-Key: BOT_API_KEY)
+#   POST /execution/cancel-all — cancel all open orders (requires X-API-Key: BOT_API_KEY)
 
+import hmac
 import json
 import logging
+import os
 import threading
 from datetime import datetime, timezone
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 
 import db
 
 logger = logging.getLogger(__name__)
 app = Flask(__name__)
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+def _require_api_key():
+    """
+    Returns a (response, status) tuple if the request fails auth, or None if OK.
+    Reads BOT_API_KEY from env. If unset, all requests are rejected (fail-closed).
+    Uses hmac.compare_digest to prevent timing oracle attacks.
+    """
+    configured = os.environ.get("BOT_API_KEY", "")
+    if not configured:
+        logger.error("BOT_API_KEY is not set — execution endpoints are locked")
+        return jsonify({"error": "Server misconfiguration: BOT_API_KEY not set"}), 503
+    provided = request.headers.get("X-API-Key", "")
+    if not hmac.compare_digest(provided, configured):
+        return jsonify({"error": "Unauthorized"}), 401
+    return None
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -109,6 +132,9 @@ def execution_status():
 @app.route("/execution/pause", methods=["POST"])
 def execution_pause():
     """Halt new signal processing. Fill polling continues."""
+    err = _require_api_key()
+    if err:
+        return err
     try:
         from execution import executor
         executor.pause()
@@ -121,6 +147,9 @@ def execution_pause():
 @app.route("/execution/resume", methods=["POST"])
 def execution_resume():
     """Resume signal processing after a pause."""
+    err = _require_api_key()
+    if err:
+        return err
     try:
         from execution import executor
         executor.resume()
@@ -136,6 +165,9 @@ def execution_cancel_all():
     Cancel every open CLOB order. Safe to call while paused or running.
     Returns a cancel summary. Requires POLYGON_PRIVATE_KEY to be set.
     """
+    err = _require_api_key()
+    if err:
+        return err
     try:
         from execution.auth import get_client
         from execution.order_manager import cancel_all_open_orders
