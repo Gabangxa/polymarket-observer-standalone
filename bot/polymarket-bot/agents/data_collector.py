@@ -12,6 +12,7 @@
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 import api
@@ -174,18 +175,27 @@ def run():
     collected = 0
     failed    = 0
 
-    for market in watchlist:
-        market_id = market.get("market_id", "unknown")
-        logger.info(f"Collecting: {market_id} — {str(market.get('question', ''))[:60]}")
-        try:
-            snapshot = _collect_market_snapshot(market, deep=is_deep)
-            db.insert_snapshot(snapshot)
-            if snapshot["errors"]:
-                logger.warning(f"  Saved with {len(snapshot['errors'])} partial errors")
-            collected += 1
-        except Exception as e:
-            logger.error(f"  Failed for {market_id}: {e}")
-            failed += 1
+    # Parallelise the HTTP collection phase across all markets.
+    # httpx.Client is thread-safe for concurrent reads.
+    # DB inserts run sequentially in the main thread to stay within the connection pool limit.
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = {
+            pool.submit(_collect_market_snapshot, market, is_deep): market
+            for market in watchlist
+        }
+        for future in as_completed(futures):
+            market    = futures[future]
+            market_id = market.get("market_id", "unknown")
+            try:
+                snapshot = future.result()
+                logger.info(f"Collected: {market_id} — {str(market.get('question', ''))[:60]}")
+                db.insert_snapshot(snapshot)
+                if snapshot["errors"]:
+                    logger.warning(f"  Saved with {len(snapshot['errors'])} partial errors")
+                collected += 1
+            except Exception as e:
+                logger.error(f"  Failed for {market_id}: {e}")
+                failed += 1
 
     logger.info(f"Collection complete: {collected} saved, {failed} failed")
     return {"agent": "data_collector", "collected": collected, "failed": failed, "deep": is_deep}

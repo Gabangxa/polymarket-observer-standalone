@@ -60,8 +60,8 @@ def main():
         executor_thread = start_executor()
         if BANKROLL_USDC <= 0:
             logger.warning(
-                "Executor started but BANKROLL_USDC = 0 in config.py — "
-                "all orders will be rejected at pre-trade gate until this is set."
+                "Executor started but BANKROLL_USDC env var is 0 or unset — "
+                "all orders will be rejected at pre-trade gate until it is set."
             )
     else:
         logger.warning(

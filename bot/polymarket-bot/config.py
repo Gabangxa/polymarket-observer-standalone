@@ -106,9 +106,9 @@ ARB_MIN_NET_MARGIN      = 0.015  # Require a guaranteed 1.5% net profit after ca
 # Target Threshold = 1.0 - (FEE_RATES[category][0] + ARB_MIN_NET_MARGIN)
 
 # ── Execution layer — risk and strategy parameters ────────────────────────────
-# These are code, not config. Change via git commit, not Railway dashboard.
-# Capital allocation decisions must have an audit trail.
-BANKROLL_USDC         = 0.0    # USDC allocated to execution — set this before first deploy
+# BANKROLL_USDC is read from the BANKROLL_USDC env var (set in Railway service variables).
+# Defaults to 0.0 (execution blocked) so a missing var never causes over-exposure.
+BANKROLL_USDC         = float(os.environ.get("BANKROLL_USDC", "0.0"))
 MAX_POSITION_PCT      = 0.10   # max fraction of bankroll per single position
 MAX_PORTFOLIO_PCT     = 0.33   # max fraction of bankroll open across all positions
 MAX_SIGNAL_AGE_SECS   = 60     # reject signals older than this (seconds)
@@ -122,6 +122,7 @@ ORDER_TTL_SPREAD_SECS = 600    # spread_engine: 10 min — stale quote = no edge
 ORDER_TTL_TAIL_SECS   = 3600   # tail_yield_engine: 60 min — near-certain prices move slowly
 
 # ── Infrastructure — set in Railway service variables, never in code ──────────
+# BANKROLL_USDC        — USDC allocated to execution  (read above in this file)
 # POLYGON_PRIVATE_KEY  — L1 wallet key               (read in execution/auth.py)
 # NATS_URL             — NATS server endpoint         (read in nats_bus.py)
 # SIGNAL_WEBHOOK_URL   — external HTTP webhook        (read in webhook_dispatcher.py)
