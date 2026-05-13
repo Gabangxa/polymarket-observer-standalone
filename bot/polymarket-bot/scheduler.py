@@ -54,9 +54,10 @@ def main():
     # Gate: POLYGON_PRIVATE_KEY must be set in Railway service variables.
     # BANKROLL_USDC is set in config.py — update it there before deploying.
     from config import BANKROLL_USDC
+    executor_thread = None
     if os.environ.get("POLYGON_PRIVATE_KEY"):
         from execution.executor import start_executor
-        start_executor()
+        executor_thread = start_executor()
         if BANKROLL_USDC <= 0:
             logger.warning(
                 "Executor started but BANKROLL_USDC = 0 in config.py — "
@@ -73,6 +74,13 @@ def main():
     while True:
         run_count += 1
         skip_scan = (run_count % SCAN_INTERVAL_RUNS != 1)
+
+        # Watchdog: restart executor thread if it has died silently
+        if executor_thread is not None and not executor_thread.is_alive():
+            logger.error("Executor thread has died — restarting", exc_info=False)
+            alerts.pipeline_crashed(run_count, Exception("executor thread died unexpectedly"))
+            from execution.executor import start_executor
+            executor_thread = start_executor()
 
         logger.info(f"\n{'='*40}")
         logger.info(

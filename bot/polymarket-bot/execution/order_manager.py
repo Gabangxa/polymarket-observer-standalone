@@ -137,6 +137,9 @@ def place_order(signal: dict, client, reprice_of: int = None) -> dict:
     if size_usdc <= 0:
         return {"ok": False, "clord_id": clord_id, "error": "computed size is zero"}
 
+    # Compute share quantity once in Decimal to avoid float drift across all three uses below.
+    size_shares = (size_usdc / price).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
+
     expiration    = _gtd_expiration(strategy)
     expiration_dt = datetime.fromtimestamp(expiration, tz=timezone.utc)
 
@@ -169,7 +172,7 @@ def place_order(signal: dict, client, reprice_of: int = None) -> dict:
         order_args = OrderArgs(
             token_id=token_id,
             price=float(price),
-            size=float(size_usdc / price),   # convert USDC → shares
+            size=float(size_shares),
             side="BUY",
         )
 
@@ -187,12 +190,12 @@ def place_order(signal: dict, client, reprice_of: int = None) -> dict:
         db.update_order_status(
             clord_id, "OPEN",
             exchange_order_id=exchange_order_id,
-            working_qty=float(size_usdc / price),
+            working_qty=float(size_shares),
         )
         # Record working qty in positions table
         db.upsert_position(
             market_id, token_id, "YES",
-            delta_working_buy=float(size_usdc / price),
+            delta_working_buy=float(size_shares),
         )
 
         logger.info(

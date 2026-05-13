@@ -311,7 +311,7 @@ def get_watchlist() -> list[dict]:
 
 def prune_watchlist(keep_ids: list[str]) -> int:
     """
-    Delete markets (and their snapshots) whose market_id is not in keep_ids.
+    Delete markets (and their snapshots and signals) whose market_id is not in keep_ids.
     Called after each scanner run to enforce the watchlist cap.
 
     Safety: returns 0 immediately if keep_ids is empty — never wipes the
@@ -322,6 +322,11 @@ def prune_watchlist(keep_ids: list[str]) -> int:
         return 0
     with get_conn() as conn:
         with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM signals WHERE market_id IS NOT NULL AND NOT (market_id = ANY(%s))",
+                (keep_ids,),
+            )
+            signal_count = cur.rowcount
             cur.execute(
                 "DELETE FROM snapshots WHERE NOT (market_id = ANY(%s))",
                 (keep_ids,),
@@ -334,8 +339,8 @@ def prune_watchlist(keep_ids: list[str]) -> int:
             market_count = cur.rowcount
     if market_count:
         logger.info(
-            f"Watchlist pruned: removed {market_count} market(s) "
-            f"and {snap_count} orphaned snapshot(s)"
+            f"Watchlist pruned: removed {market_count} market(s), "
+            f"{snap_count} snapshot(s), {signal_count} signal(s)"
         )
     return market_count
 
