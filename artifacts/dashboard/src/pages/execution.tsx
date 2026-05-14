@@ -790,10 +790,10 @@ export default function Execution() {
           <StatCard
             icon={<DollarSign className="w-4 h-4" />}
             label="Bankroll"
-            value={`$${portfolio.bankroll.toFixed(2)}`}
+            value={`$${parseNumeric(portfolio.bankroll).toFixed(2)}`}
             sub={
-              portfolio.bankroll > 0
-                ? `${(portfolio.deployedPct * 100).toFixed(1)}% deployed · $${portfolio.available.toFixed(2)} free`
+              parseNumeric(portfolio.bankroll) > 0
+                ? `${(parseNumeric(portfolio.deployedPct) * 100).toFixed(1)}% deployed · $${parseNumeric(portfolio.available).toFixed(2)} free`
                 : "BANKROLL_USDC not set"
             }
           />

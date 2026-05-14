@@ -147,7 +147,7 @@ router.get("/positions", async (req, res) => {
 
 router.get("/portfolio", async (req, res) => {
   try {
-    const bankroll = parseFloat(process.env.BANKROLL_USDC ?? "0");
+    const bankroll = parseFloat(process.env.BANKROLL_USDC ?? "0") || 0;
 
     const [riskRow] = await db
       .select({ total: sql<string>`COALESCE(SUM(${ordersTable.sizeUsdc}::numeric), 0)` })

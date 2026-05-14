@@ -1,9 +1,38 @@
+import { Component, type ReactNode } from "react";
 import { Switch, Route, Router as WouterRouter } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { TimezoneProvider } from "@/hooks/use-timezone";
 import NotFound from "@/pages/not-found";
+
+class ErrorBoundary extends Component<
+  { children: ReactNode },
+  { error: Error | null }
+> {
+  state = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  render() {
+    const { error } = this.state;
+    if (error) {
+      return (
+        <div style={{ padding: "2rem", fontFamily: "monospace", color: "#f87171" }}>
+          <strong>Runtime error — page could not render</strong>
+          <pre style={{ marginTop: "1rem", whiteSpace: "pre-wrap", fontSize: "0.8rem", color: "#94a3b8" }}>
+            {(error as Error).message}
+            {"\n\n"}
+            {(error as Error).stack}
+          </pre>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 // Components & Pages
 import { Layout } from "@/components/layout";
@@ -49,9 +78,11 @@ function App() {
     <TimezoneProvider>
       <QueryClientProvider client={queryClient}>
         <TooltipProvider>
-          <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-            <Router />
-          </WouterRouter>
+          <ErrorBoundary>
+            <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
+              <Router />
+            </WouterRouter>
+          </ErrorBoundary>
           <Toaster />
         </TooltipProvider>
       </QueryClientProvider>
