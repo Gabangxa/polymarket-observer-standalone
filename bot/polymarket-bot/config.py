@@ -111,14 +111,22 @@ ORDER_TTL_NEG_RISK_SECS = 120    # neg_risk_overround: 2 min — arb closes fast
 ORDER_TTL_TAIL_SECS     = 3600   # tail_yield_engine: 60 min — near-certain prices move slowly
 ORDER_TTL_EXIT_SECS     = 3600   # exit orders: 60 min — if unfilled in an hour, market is illiquid
 
-# ── Exit manager — take-profit thresholds ─────────────────────────────────────
-# tail_yield: exit when price ≥ entry + TAIL_YIELD_TP_RATIO × (1.0 - entry)
-#   e.g. ratio=0.5, entry=0.96 → exit at 0.98 (half the remaining gap to $1.00 captured)
-TAIL_YIELD_TP_RATIO     = 0.5
+# ── Exit manager — dynamic exit thresholds ───────────────────────────────────
+# tail_yield: exit when annualised hold-yield drops below this floor.
+#   hold_yield = (1 - price) / price × (8760 / hours_to_expiry)
+#   At 0.98 with 48h left ≈ 3.7% — below threshold → exit.
+#   At 0.97 with 1h left  ≈ 277%  — above threshold → hold.
+TAIL_YIELD_MIN_HOLD_YIELD = 0.10   # 10% annualised floor
 
-# spread_engine: exit when price ≥ entry + SPREAD_TP_PIPS above entry price
-#   e.g. entry=0.55, pips=0.02 → exit at 0.57 (captured more than the spread)
-SPREAD_TP_PIPS          = 0.02
+# spread_engine: exit when live spread compresses to ≤ this multiple of the
+# estimated round-trip fee. 1.5× means exit while a thin edge still exists.
+SPREAD_EXIT_FEE_MULTIPLE  = 1.5
+
+# Trailing stop — ratchets up as price rises; triggers if price retreats
+# more than TRAIL_PIPS below the running peak since position was opened.
+# Only activates after position has shown any profit (peak > avg_cost).
+TRAIL_PIPS_TAIL           = 0.005  # 0.5¢ for tail_yield (high-conviction, tight)
+TRAIL_PIPS_SPREAD         = 0.01   # 1¢   for spread_engine
 
 # ── Infrastructure — set in Railway service variables, never in code ──────────
 # BANKROLL_USDC        — USDC allocated to execution  (read above in this file)

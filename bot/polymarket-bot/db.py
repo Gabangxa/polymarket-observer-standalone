@@ -1056,8 +1056,10 @@ def get_open_positions_with_strategy(market_id: str = None) -> list[dict]:
     sql = f"""
         SELECT
             p.*,
-            COALESCE(o.strategy, '') AS strategy
+            COALESCE(o.strategy, '') AS strategy,
+            m.end_date
         FROM positions p
+        LEFT JOIN markets m ON m.market_id = p.market_id
         LEFT JOIN LATERAL (
             SELECT strategy FROM orders
             WHERE market_id = p.market_id
