@@ -38,10 +38,14 @@ def main():
     from server import start_server
     from main import run_pipeline
 
+    from config import EXECUTION_STRATEGIES, EXECUTION_MIN_SCORE, BANKROLL_USDC
     logger.info("=" * 60)
     logger.info("polymarket-bot starting up")
-    logger.info(f"Poll interval : {POLL_INTERVAL_SECONDS}s")
-    logger.info(f"Scan interval : every {SCAN_INTERVAL_RUNS} runs")
+    logger.info(f"Poll interval    : {POLL_INTERVAL_SECONDS}s")
+    logger.info(f"Scan interval    : every {SCAN_INTERVAL_RUNS} runs")
+    logger.info(f"Active strategies: {EXECUTION_STRATEGIES or '(none — execution disabled)'}")
+    logger.info(f"Min score        : {EXECUTION_MIN_SCORE}")
+    logger.info(f"Bankroll USDC    : {BANKROLL_USDC if BANKROLL_USDC > 0 else '(not set — orders blocked)'}")
     logger.info("=" * 60)
 
     # Start HTTP keep-alive server in background thread.

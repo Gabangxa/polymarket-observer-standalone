@@ -102,8 +102,25 @@ MAX_PORTFOLIO_PCT     = 0.33   # max fraction of bankroll open across all positi
 MAX_SIGNAL_AGE_SECS   = 60     # reject signals older than this (seconds)
 ORDER_MAX_RETRIES     = 5      # exponential backoff attempts before REJECTED
 EXECUTOR_POLL_SECS    = 10     # fallback poll interval (NATS fast-path is faster)
-EXECUTION_STRATEGIES  = ["spread_engine", "tail_yield_engine", "neg_risk_overround"]
-EXECUTION_MIN_SCORE   = 0.75   # minimum signal score to execute
+# EXECUTION_STRATEGIES is read from the env var of the same name (Railway service variable).
+# Set it to a comma-separated list to restrict which engines place live orders.
+# Unknown strategy names are silently dropped; an empty result means no orders execute.
+# Defaults to all three engines when the var is unset.
+# Examples:
+#   EXECUTION_STRATEGIES=tail_yield_engine
+#   EXECUTION_STRATEGIES=spread_engine,tail_yield_engine
+_KNOWN_STRATEGIES = {"spread_engine", "tail_yield_engine", "neg_risk_overround"}
+_DEFAULT_STRATEGIES = ["spread_engine", "tail_yield_engine", "neg_risk_overround"]
+_raw_strategies = os.environ.get("EXECUTION_STRATEGIES", "").strip()
+if _raw_strategies:
+    EXECUTION_STRATEGIES = [
+        s.strip() for s in _raw_strategies.split(",")
+        if s.strip() in _KNOWN_STRATEGIES
+    ]
+else:
+    EXECUTION_STRATEGIES = _DEFAULT_STRATEGIES
+
+EXECUTION_MIN_SCORE   = float(os.environ.get("EXECUTION_MIN_SCORE", "0.75"))
 
 # GTD order lifetimes (seconds). Polymarket enforces a 60s minimum buffer on top.
 ORDER_TTL_SPREAD_SECS   = 600    # spread_engine: 10 min — stale quote = no edge
