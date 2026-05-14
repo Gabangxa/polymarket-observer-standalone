@@ -567,6 +567,19 @@ def insert_signal(signal: dict) -> int:
     return row_id
 
 
+def get_token_ids_for_markets(market_ids: list[str]) -> dict[str, list[str]]:
+    """Return {market_id: token_ids} for a list of market IDs. Used by neg_risk executor."""
+    if not market_ids:
+        return {}
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT market_id, token_ids FROM markets WHERE market_id = ANY(%s)",
+                (market_ids,),
+            )
+            return {r["market_id"]: (r["token_ids"] or []) for r in cur.fetchall()}
+
+
 def get_recent_signals(strategy: str = None, hours: int = 24, limit: int = 100) -> list[dict]:
     """Fetch recent signals, optionally filtered by strategy."""
     with get_conn() as conn:

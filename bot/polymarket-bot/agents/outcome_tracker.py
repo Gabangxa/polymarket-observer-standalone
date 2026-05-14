@@ -110,7 +110,7 @@ def _resolve_neg_risk(signal: dict, snapshots_by_market: dict):
     exit_price stores the current sum of prices for the event.
     """
     meta      = signal.get("metadata") or {}
-    entry_sum = float(meta.get("sum_prices") or 1.0)
+    entry_sum = float(meta.get("sum_prices") or meta.get("sum_asks") or 1.0)
     outcomes  = meta.get("outcomes") or []
 
     current_prices = []

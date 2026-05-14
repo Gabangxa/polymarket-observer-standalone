@@ -17,7 +17,7 @@ MIN_LIQUIDITY           = 2_000  # USD — need enough depth to matter
 MIN_TOP_BOOK_DEPTH      = 50    # USD — minimum size available at the best bid/ask to consider the spread/arb valid
 MIN_HOURS_TO_CLOSE      = 1      # Allow scanning right up to the final hours
 MAX_HOURS_TO_CLOSE      = 168   # skip markets expiring beyond 7 days — laser focus on short-resolution markets
-MAX_WATCHLIST_SIZE      = 10    # keep the watchlist focused
+MAX_WATCHLIST_SIZE      = 50    # broader opportunity surface across strategies
 
 # Price range filter for strategy relevance:
 # - Spread engine:    best between 0.20–0.80 (fees are meaningful)
@@ -114,12 +114,13 @@ MAX_PORTFOLIO_PCT     = 0.33   # max fraction of bankroll open across all positi
 MAX_SIGNAL_AGE_SECS   = 60     # reject signals older than this (seconds)
 ORDER_MAX_RETRIES     = 5      # exponential backoff attempts before REJECTED
 EXECUTOR_POLL_SECS    = 10     # fallback poll interval (NATS fast-path is faster)
-EXECUTION_STRATEGIES  = ["spread_engine", "tail_yield_engine"]
+EXECUTION_STRATEGIES  = ["spread_engine", "tail_yield_engine", "neg_risk_overround"]
 EXECUTION_MIN_SCORE   = 0.75   # minimum signal score to execute
 
 # GTD order lifetimes (seconds). Polymarket enforces a 60s minimum buffer on top.
-ORDER_TTL_SPREAD_SECS = 600    # spread_engine: 10 min — stale quote = no edge
-ORDER_TTL_TAIL_SECS   = 3600   # tail_yield_engine: 60 min — near-certain prices move slowly
+ORDER_TTL_SPREAD_SECS   = 600    # spread_engine: 10 min — stale quote = no edge
+ORDER_TTL_NEG_RISK_SECS = 120    # neg_risk_overround: 2 min — arb closes fast, partial fills are risky
+ORDER_TTL_TAIL_SECS     = 3600   # tail_yield_engine: 60 min — near-certain prices move slowly
 
 # ── Infrastructure — set in Railway service variables, never in code ──────────
 # BANKROLL_USDC        — USDC allocated to execution  (read above in this file)

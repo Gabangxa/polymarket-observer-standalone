@@ -13,7 +13,7 @@ from decimal import Decimal, ROUND_DOWN
 import alerts
 import db
 import nats_bus
-from config import ORDER_MAX_RETRIES, ORDER_TTL_SPREAD_SECS, ORDER_TTL_TAIL_SECS
+from config import ORDER_MAX_RETRIES, ORDER_TTL_SPREAD_SECS, ORDER_TTL_NEG_RISK_SECS, ORDER_TTL_TAIL_SECS
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,12 @@ _MIN_ORDER_USDC = Decimal("5.0")
 
 def _gtd_expiration(strategy: str) -> int:
     """Unix timestamp (seconds) for GTD expiry. Includes Polymarket's 60s minimum buffer."""
-    ttl = ORDER_TTL_SPREAD_SECS if strategy == "spread_engine" else ORDER_TTL_TAIL_SECS
+    if strategy == "spread_engine":
+        ttl = ORDER_TTL_SPREAD_SECS
+    elif strategy == "neg_risk_overround":
+        ttl = ORDER_TTL_NEG_RISK_SECS
+    else:
+        ttl = ORDER_TTL_TAIL_SECS
     return int(time.time()) + _GTD_BUFFER_SECS + ttl
 
 
@@ -94,6 +99,124 @@ def _get_token_id(signal: dict, side: str) -> str | None:
     return token_ids[1] if len(token_ids) > 1 else token_ids[0]
 
 
+def _place_neg_risk_legs(signal: dict, client) -> dict:
+    """
+    Place one BUY YES GTD order per outcome leg for a neg_risk_overround signal.
+    The signal is marked executed before the first leg is submitted so retries
+    cannot double-place legs. Returns ok=True only if every leg was submitted.
+    """
+    signal_id = signal["id"]
+    metadata  = signal.get("metadata") or {}
+    outcomes  = metadata.get("outcomes") or []
+
+    if not outcomes:
+        return {"ok": False, "clord_id": None, "error": "no outcomes in metadata"}
+
+    market_ids = [o["market_id"] for o in outcomes if o.get("market_id")]
+    if not market_ids:
+        return {"ok": False, "clord_id": None, "error": "no market_ids in outcomes"}
+
+    token_map = db.get_token_ids_for_markets(market_ids)
+
+    # Mark executed before touching the API — prevents duplicate legs on retry
+    if signal_id:
+        db.mark_signal_executed(signal_id)
+
+    legs_total     = len(market_ids)
+    legs_placed    = 0
+    first_clord_id = None
+
+    for outcome in outcomes:
+        market_id = outcome.get("market_id")
+        if not market_id:
+            continue
+
+        token_ids = token_map.get(market_id) or []
+        if not token_ids:
+            logger.warning(f"Neg-risk leg skipped — no token_ids | market={market_id}")
+            continue
+
+        yes_ask = outcome.get("yes_ask")
+        if yes_ask is None:
+            logger.warning(f"Neg-risk leg skipped — no yes_ask | market={market_id}")
+            continue
+
+        token_id    = token_ids[0]
+        price       = Decimal(str(yes_ask)).quantize(Decimal("0.001"), rounding=ROUND_DOWN)
+        size_usdc   = _MIN_ORDER_USDC
+        size_shares = (size_usdc / price).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
+        expiration  = _gtd_expiration("neg_risk_overround")
+        expiration_dt = datetime.fromtimestamp(expiration, tz=timezone.utc)
+        clord_id    = _make_clord_id("negrisk", signal_id)
+
+        try:
+            db.insert_order({
+                "clord_id":      clord_id,
+                "signal_id":     signal_id,
+                "market_id":     market_id,
+                "token_id":      token_id,
+                "side":          "BUY",
+                "price":         float(price),
+                "size_usdc":     float(size_usdc),
+                "strategy":      "neg_risk_overround",
+                "expiration_ts": expiration_dt,
+                "reprice_of":    None,
+            })
+        except Exception as e:
+            logger.error(f"DB insert failed for neg_risk leg | clord_id={clord_id}: {e}")
+            continue
+
+        try:
+            from py_clob_client.clob_types import OrderArgs, OrderType
+            order_args = OrderArgs(
+                token_id=token_id,
+                price=float(price),
+                size=float(size_shares),
+                side="BUY",
+            )
+
+            def _submit():
+                return client.create_and_post_order(
+                    order_args,
+                    order_type=OrderType.GTD,
+                    expiration=expiration,
+                )
+
+            db.update_order_status(clord_id, "SENT", submitted_at=datetime.now(timezone.utc))
+            response          = _backoff_retry(_submit)
+            exchange_order_id = response.get("orderID") or response.get("id", "")
+            db.update_order_status(
+                clord_id, "OPEN",
+                exchange_order_id=exchange_order_id,
+                working_qty=float(size_shares),
+            )
+            db.upsert_position(market_id, token_id, "YES", delta_working_buy=float(size_shares))
+
+            if first_clord_id is None:
+                first_clord_id = clord_id
+            legs_placed += 1
+            logger.info(
+                f"Neg-risk leg placed | clord_id={clord_id} | "
+                f"market={market_id} | price={price} | size_usdc={size_usdc}"
+            )
+
+        except Exception as e:
+            logger.error(f"Neg-risk leg submission failed | clord_id={clord_id} market={market_id}: {e}")
+            db.update_order_status(clord_id, "REJECTED", error_msg=str(e))
+
+    ok = legs_placed == legs_total
+    if legs_placed > 0 and not ok:
+        logger.warning(
+            f"Neg-risk partial execution: {legs_placed}/{legs_total} legs | signal_id={signal_id}"
+        )
+
+    return {
+        "ok":      ok,
+        "clord_id": first_clord_id,
+        "error":   None if ok else f"partial: {legs_placed}/{legs_total} legs placed",
+    }
+
+
 def place_order(signal: dict, client, reprice_of: int = None) -> dict:
     """
     Place a GTD CLOB order for the given signal.
@@ -109,6 +232,10 @@ def place_order(signal: dict, client, reprice_of: int = None) -> dict:
     strategy  = signal["strategy"]
     market_id = signal.get("market_id", "")
     metadata  = signal.get("metadata") or {}
+
+    # Neg-risk is multi-leg — each outcome market gets its own order
+    if strategy == "neg_risk_overround":
+        return _place_neg_risk_legs(signal, client)
 
     token_id = _get_token_id(signal, "BUY")
     if not token_id:
