@@ -147,14 +147,17 @@ router.get("/positions", async (req, res) => {
 
 router.get("/portfolio", async (req, res) => {
   try {
-    const [configRow] = await db
-      .select({ value: botConfigTable.value })
-      .from(botConfigTable)
-      .where(eq(botConfigTable.key, "bankroll_usdc"))
-      .limit(1);
-    const bankroll = configRow
-      ? parseFloat(configRow.value) || 0
-      : parseFloat(process.env.BANKROLL_USDC ?? "0") || 0;
+    let bankroll = parseFloat(process.env.BANKROLL_USDC ?? "0") || 0;
+    try {
+      const [configRow] = await db
+        .select({ value: botConfigTable.value })
+        .from(botConfigTable)
+        .where(eq(botConfigTable.key, "bankroll_usdc"))
+        .limit(1);
+      if (configRow) bankroll = parseFloat(configRow.value) || 0;
+    } catch {
+      // bot_config table not yet created — fall back to env var
+    }
 
     const [riskRow] = await db
       .select({ total: sql<string>`COALESCE(SUM(${ordersTable.sizeUsdc}::numeric), 0)` })

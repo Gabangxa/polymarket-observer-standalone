@@ -1,14 +1,25 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { botConfigTable } from "@workspace/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
 const router: IRouter = Router();
 
 const BANKROLL_KEY = "bankroll_usdc";
 
+async function ensureTable() {
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS bot_config (
+      key        TEXT PRIMARY KEY,
+      value      TEXT NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+}
+
 router.get("/config/bankroll", async (req, res) => {
   try {
+    await ensureTable();
     const [row] = await db
       .select({ value: botConfigTable.value })
       .from(botConfigTable)
@@ -32,6 +43,7 @@ router.put("/config/bankroll", async (req, res) => {
       return;
     }
 
+    await ensureTable();
     await db
       .insert(botConfigTable)
       .values({ key: BANKROLL_KEY, value: String(bankroll) })
