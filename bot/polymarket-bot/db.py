@@ -493,10 +493,13 @@ def get_neg_risk_snapshots_by_event() -> dict[str, list[dict]]:
                     s.market_id,
                     s.yes_price,
                     s.yes_ask,
+                    s.no_price,
+                    s.no_ask,
                     s.collected_at,
                     m.question,
                     m.event_slug,
-                    m.neg_risk
+                    m.neg_risk,
+                    m.token_ids
                 FROM snapshots s
                 JOIN markets m ON m.market_id = s.market_id
                 WHERE m.neg_risk = TRUE

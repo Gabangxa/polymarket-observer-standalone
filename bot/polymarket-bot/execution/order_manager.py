@@ -113,13 +113,7 @@ def _place_neg_risk_legs(signal: dict, client) -> dict:
 
     arb_type = metadata.get("arb_type", "")
     if arb_type == "maker":
-        logger.info(
-            f"neg_risk signal {signal_id} is a MAKER arb — "
-            "SELL NO execution not yet implemented, skipping."
-        )
-        if signal_id:
-            db.mark_signal_executed(signal_id)
-        return {"ok": False, "clord_id": None, "error": "maker arb not yet executable"}
+        return _place_neg_risk_maker_legs(signal, client)
 
     outcomes  = metadata.get("outcomes") or []
 
@@ -228,6 +222,128 @@ def _place_neg_risk_legs(signal: dict, client) -> dict:
         "ok":      ok,
         "clord_id": first_clord_id,
         "error":   None if ok else f"partial: {legs_placed}/{legs_total} legs placed",
+    }
+
+
+def _place_neg_risk_maker_legs(signal: dict, client) -> dict:
+    """
+    Place one SELL YES GTD limit order per outcome leg for a neg_risk MAKER signal.
+
+    When sum(YES_mids) > 1.02, YES tokens are collectively over-priced.
+    Selling YES at mid price across all legs collects sum(YES_mids) > $1 in USDC.
+    At resolution exactly one YES leg is claimed for $1 — all others expire worthless.
+    Profit = sum(YES_mids) - $1 (locked at fill time, no further directional risk).
+
+    Partial fill risk: if only K < N legs fill, the remaining filled legs carry
+    directional exposure. This is why TTL is short (NEG_RISK_SECS = 2 min).
+
+    All legs are marked executed before the first CLOB submission to prevent
+    duplicate execution on retry.
+    """
+    signal_id = signal["id"]
+    metadata  = signal.get("metadata") or {}
+    outcomes  = metadata.get("outcomes") or []
+
+    if not outcomes:
+        return {"ok": False, "clord_id": None, "error": "no outcomes in metadata"}
+
+    if signal_id:
+        db.mark_signal_executed(signal_id)
+
+    legs_total     = len(outcomes)
+    legs_placed    = 0
+    first_clord_id = None
+
+    for outcome in outcomes:
+        market_id    = outcome.get("market_id")
+        yes_token_id = outcome.get("yes_token_id")
+        yes_price    = outcome.get("yes_price")
+
+        if not market_id or not yes_token_id:
+            logger.warning(
+                f"Maker leg skipped — missing market_id or yes_token_id | market={market_id}"
+            )
+            continue
+
+        if yes_price is None:
+            logger.warning(f"Maker leg skipped — no yes_price | market={market_id}")
+            continue
+
+        price       = Decimal(str(yes_price)).quantize(Decimal("0.001"), rounding=ROUND_DOWN)
+        size_usdc   = _MIN_ORDER_USDC
+        size_shares = (size_usdc / price).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
+        expiration  = _gtd_expiration("neg_risk_overround")
+        expiration_dt = datetime.fromtimestamp(expiration, tz=timezone.utc)
+        clord_id    = _make_clord_id("negrsk_m", signal_id)
+
+        try:
+            db.insert_order({
+                "clord_id":      clord_id,
+                "signal_id":     signal_id,
+                "market_id":     market_id,
+                "token_id":      yes_token_id,
+                "side":          "SELL",
+                "price":         float(price),
+                "size_usdc":     float(size_usdc),
+                "strategy":      "neg_risk_overround",
+                "expiration_ts": expiration_dt,
+                "reprice_of":    None,
+            })
+        except Exception as e:
+            logger.error(f"DB insert failed for maker leg | clord_id={clord_id}: {e}")
+            continue
+
+        # Mark working_sell before touching the CLOB
+        db.upsert_position(market_id, yes_token_id, "YES", delta_working_sell=float(size_shares))
+
+        try:
+            from py_clob_client.clob_types import OrderArgs, OrderType
+            order_args = OrderArgs(
+                token_id=yes_token_id,
+                price=float(price),
+                size=float(size_shares),
+                side="SELL",
+            )
+
+            def _submit():
+                return client.create_and_post_order(
+                    order_args,
+                    order_type=OrderType.GTD,
+                    expiration=expiration,
+                )
+
+            db.update_order_status(clord_id, "SENT", submitted_at=datetime.now(timezone.utc))
+            response          = _backoff_retry(_submit)
+            exchange_order_id = response.get("orderID") or response.get("id", "")
+            db.update_order_status(
+                clord_id, "OPEN",
+                exchange_order_id=exchange_order_id,
+                working_qty=float(size_shares),
+            )
+
+            if first_clord_id is None:
+                first_clord_id = clord_id
+            legs_placed += 1
+            logger.info(
+                f"Maker leg placed | clord_id={clord_id} | market={market_id} "
+                f"| price={price} | shares={size_shares}"
+            )
+
+        except Exception as e:
+            logger.error(f"Maker leg submission failed | clord_id={clord_id} market={market_id}: {e}")
+            db.update_order_status(clord_id, "REJECTED", error_msg=str(e))
+            db.upsert_position(market_id, yes_token_id, "YES", delta_working_sell=-float(size_shares))
+
+    ok = legs_placed == legs_total
+    if legs_placed > 0 and not ok:
+        logger.warning(
+            f"Maker partial execution: {legs_placed}/{legs_total} legs | signal_id={signal_id}"
+        )
+
+    return {
+        "ok":      ok,
+        "clord_id": first_clord_id,
+        "error":   None if ok else f"partial: {legs_placed}/{legs_total} maker legs placed",
     }
 
 

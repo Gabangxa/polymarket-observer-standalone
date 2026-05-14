@@ -22,11 +22,16 @@ def _analyse_event(event_slug, snapshots):
         ask      = s.get("yes_ask")
         if midpoint is None or float(midpoint) <= 0:
             continue
+        token_ids = s.get("token_ids") or []
         records.append({
-            "question":  s.get("question", "?"),
-            "market_id": s.get("market_id"),
-            "midpoint":  float(midpoint),
-            "ask":       float(ask) if ask is not None else float(midpoint),
+            "question":     s.get("question", "?"),
+            "market_id":    s.get("market_id"),
+            "midpoint":     float(midpoint),
+            "ask":          float(ask) if ask is not None else float(midpoint),
+            "no_price":     float(s["no_price"]) if s.get("no_price") is not None else round(1.0 - float(midpoint), 6),
+            "no_ask":       float(s["no_ask"])   if s.get("no_ask")   is not None else None,
+            "yes_token_id": token_ids[0] if len(token_ids) > 0 else None,
+            "no_token_id":  token_ids[1] if len(token_ids) > 1 else None,
         })
 
     if len(records) < NEG_RISK_MIN_OUTCOMES:
@@ -88,11 +93,15 @@ def _analyse_event(event_slug, snapshots):
         ),
         "outcomes": [
             {
-                "question":  r["question"],
-                "yes_price": round(r["midpoint"], 4),
-                "yes_ask":   round(r["ask"], 4),
-                "market_id": r["market_id"],
-                "ev_no":     round(yes_ev(1.0 - fair_p, 1.0 - r["midpoint"]), 4),
+                "question":     r["question"],
+                "market_id":    r["market_id"],
+                "yes_price":    round(r["midpoint"], 4),
+                "yes_ask":      round(r["ask"], 4),
+                "yes_token_id": r["yes_token_id"],
+                "no_price":     round(r["no_price"], 4),
+                "no_ask":       round(r["no_ask"], 4) if r["no_ask"] is not None else None,
+                "no_token_id":  r["no_token_id"],
+                "ev_no":        round(yes_ev(1.0 - fair_p, 1.0 - r["midpoint"]), 4),
             }
             for r in sorted(records, key=lambda x: x["midpoint"], reverse=True)
         ],
