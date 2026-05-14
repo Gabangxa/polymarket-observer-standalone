@@ -327,8 +327,17 @@ def start() -> None:
     """
     global _client, _enabled
 
-    count = _seed_index()
-    logger.info(f"Exit manager: seeded {count} open position(s)")
+    try:
+        count = _seed_index()
+        logger.info(f"Exit manager: seeded {count} open position(s)")
+    except Exception as e:
+        logger.warning(
+            f"Exit manager: DB seed failed ({e}). "
+            "Exit orders disabled — run DB migration to enable. "
+            "Bot will continue without dynamic exits."
+        )
+        _enabled = False
+        return
 
     try:
         from execution.auth import get_client
