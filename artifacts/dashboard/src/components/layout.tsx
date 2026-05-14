@@ -13,6 +13,7 @@ import {
   Sun,
   Settings,
   Globe,
+  Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useLiveHealth } from "@/hooks/use-polymarket";
@@ -23,6 +24,7 @@ const NAV_ITEMS = [
   { href: "/markets",      label: "Markets",     icon: BarChart2 },
   { href: "/signals",      label: "Signals",     icon: Activity, badge: "live" },
   { href: "/performance",  label: "Performance", icon: TrendingUp },
+  { href: "/execution",    label: "Execution",   icon: Zap },
   { href: "/snapshots",    label: "Data Feed",   icon: Database },
   { href: "/docs",         label: "Guide & FAQ", icon: BookOpen },
 ];

@@ -14,6 +14,7 @@ import Signals from "@/pages/signals";
 import Snapshots from "@/pages/snapshots";
 import Performance from "@/pages/performance";
 import Docs from "@/pages/docs";
+import Execution from "@/pages/execution";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -35,6 +36,7 @@ function Router() {
         <Route path="/signals" component={Signals} />
         <Route path="/snapshots" component={Snapshots} />
         <Route path="/performance" component={Performance} />
+        <Route path="/execution" component={Execution} />
         <Route path="/docs" component={Docs} />
         <Route component={NotFound} />
       </Switch>

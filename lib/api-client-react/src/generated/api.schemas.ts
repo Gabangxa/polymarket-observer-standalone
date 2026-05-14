@@ -140,6 +140,64 @@ export interface SignalListResponse {
   count: number;
 }
 
+export interface Order {
+  id: number;
+  clordId: string;
+  signalId?: number | null;
+  marketId: string;
+  tokenId: string;
+  side: string;
+  price: string;
+  sizeUsdc: string;
+  strategy: string;
+  status: string;
+  exchangeOrderId?: string | null;
+  workingQty?: string | null;
+  filledQty?: string | null;
+  fillPrice?: string | null;
+  submittedAt?: string | null;
+  filledAt?: string | null;
+  canceledAt?: string | null;
+  errorMsg?: string | null;
+  createdAt?: string | null;
+  question?: string | null;
+}
+
+export interface OrderListResponse {
+  orders: Order[];
+  count: number;
+}
+
+export interface CancelOrderResult {
+  id: number;
+  status: string;
+}
+
+export interface CancelAllResult {
+  canceled: number;
+}
+
+export interface Position {
+  id: number;
+  marketId: string;
+  tokenId: string;
+  side: string;
+  totalBought?: string | null;
+  totalSold?: string | null;
+  workingBuy?: string | null;
+  workingSell?: string | null;
+  avgCost?: string | null;
+  pnlRealized?: string | null;
+  pnlOpen?: string | null;
+  lastUpdated?: string | null;
+  question?: string | null;
+}
+
+export interface PositionListResponse {
+  positions: Position[];
+  count: number;
+}
+
 export type SignalCountsResponseCounts = { [key: string]: number };
 
 export interface SignalCountsResponse {
@@ -164,3 +222,17 @@ export type ListSignalsParams = {
   limit?: number;
   resolved?: boolean;
 };
+
+export type ListOrdersParams = {
+  status?: ListOrdersStatus;
+  limit?: number;
+};
+
+export type ListOrdersStatus =
+  (typeof ListOrdersStatus)[keyof typeof ListOrdersStatus];
+
+export const ListOrdersStatus = {
+  active: "active",
+  closed: "closed",
+  all: "all",
+} as const;

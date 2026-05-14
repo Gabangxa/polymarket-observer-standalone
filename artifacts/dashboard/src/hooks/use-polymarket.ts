@@ -6,8 +6,19 @@ import {
   getGetMarketSnapshotsQueryOptions,
   getListSignalsQueryOptions,
   getGetSignalCountsQueryOptions,
+  getListOrdersQueryOptions,
+  getListPositionsQueryOptions,
+  useCancelOrder,
+  useCancelAllOrders,
 } from "@workspace/api-client-react";
-import type { ListSnapshotsParams, GetMarketSnapshotsParams, ListSignalsParams } from "@workspace/api-client-react";
+import type {
+  ListSnapshotsParams,
+  GetMarketSnapshotsParams,
+  ListSignalsParams,
+  ListOrdersParams,
+} from "@workspace/api-client-react";
+
+export { useCancelOrder, useCancelAllOrders };
 
 const POLLING_INTERVAL = 30000;
 
@@ -88,6 +99,20 @@ export function useStrategyPerformance() {
       if (!res.ok) throw new Error("Failed to fetch performance data");
       return res.json();
     },
+    refetchInterval: POLLING_INTERVAL,
+  });
+}
+
+export function useLiveOrders(params?: ListOrdersParams) {
+  return useQuery({
+    ...getListOrdersQueryOptions(params),
+    refetchInterval: POLLING_INTERVAL,
+  });
+}
+
+export function useLivePositions() {
+  return useQuery({
+    ...getListPositionsQueryOptions(),
     refetchInterval: POLLING_INTERVAL,
   });
 }

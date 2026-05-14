@@ -221,6 +221,94 @@ export const CreateSignalBody = zod.object({
 });
 
 /**
+ * Returns orders filtered by status group (active, closed, or all)
+ * @summary List orders
+ */
+export const listOrdersQueryStatusDefault = `active`;
+export const listOrdersQueryLimitDefault = 200;
+
+export const ListOrdersQueryParams = zod.object({
+  status: zod
+    .enum(["active", "closed", "all"])
+    .default(listOrdersQueryStatusDefault),
+  limit: zod.coerce.number().default(listOrdersQueryLimitDefault),
+});
+
+export const ListOrdersResponse = zod.object({
+  orders: zod.array(
+    zod.object({
+      id: zod.number(),
+      clordId: zod.string(),
+      signalId: zod.number().nullish(),
+      marketId: zod.string(),
+      tokenId: zod.string(),
+      side: zod.string(),
+      price: zod.string(),
+      sizeUsdc: zod.string(),
+      strategy: zod.string(),
+      status: zod.string(),
+      exchangeOrderId: zod.string().nullish(),
+      workingQty: zod.string().nullish(),
+      filledQty: zod.string().nullish(),
+      fillPrice: zod.string().nullish(),
+      submittedAt: zod.coerce.date().nullish(),
+      filledAt: zod.coerce.date().nullish(),
+      canceledAt: zod.coerce.date().nullish(),
+      errorMsg: zod.string().nullish(),
+      createdAt: zod.coerce.date().nullish(),
+      question: zod.string().nullish(),
+    }),
+  ),
+  count: zod.number(),
+});
+
+/**
+ * Sets all PENDING_SUBMISSION, SUBMITTED, and PARTIALLY_FILLED orders to CANCEL_REQUESTED
+ * @summary Cancel all active orders
+ */
+export const CancelAllOrdersResponse = zod.object({
+  canceled: zod.number(),
+});
+
+/**
+ * Sets a single active order to CANCEL_REQUESTED status
+ * @summary Cancel a single order
+ */
+export const CancelOrderParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const CancelOrderResponse = zod.object({
+  id: zod.number(),
+  status: zod.string(),
+});
+
+/**
+ * Returns all positions with non-zero net exposure or working quantity
+ * @summary List open positions
+ */
+export const ListPositionsResponse = zod.object({
+  positions: zod.array(
+    zod.object({
+      id: zod.number(),
+      marketId: zod.string(),
+      tokenId: zod.string(),
+      side: zod.string(),
+      totalBought: zod.string().nullish(),
+      totalSold: zod.string().nullish(),
+      workingBuy: zod.string().nullish(),
+      workingSell: zod.string().nullish(),
+      avgCost: zod.string().nullish(),
+      pnlRealized: zod.string().nullish(),
+      pnlOpen: zod.string().nullish(),
+      lastUpdated: zod.coerce.date().nullish(),
+      question: zod.string().nullish(),
+    }),
+  ),
+  count: zod.number(),
+});
+
+/**
  * Returns signal counts per strategy for the last 24h
  * @summary Get signal counts
  */

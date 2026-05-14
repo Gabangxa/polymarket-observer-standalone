@@ -35,7 +35,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use("/api", (req, res, next) => {
   const mutating = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method);
   if (mutating) return requireApiKey(req, res, next);
-  next();
+  return next();
 });
 app.use("/api", router);
 

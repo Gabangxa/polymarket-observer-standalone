@@ -16,6 +16,8 @@ tags:
     description: Market snapshots
   - name: signals
     description: Strategy signals
+  - name: orders
+    description: Orders and positions
 paths:
   /healthz:
     get:
@@ -182,6 +184,82 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SignalCreated"
+
+  /orders:
+    get:
+      operationId: listOrders
+      tags: [orders]
+      summary: List orders
+      description: Returns orders filtered by status group (active, closed, or all)
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, closed, all]
+            default: active
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 200
+      responses:
+        "200":
+          description: Order list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderListResponse"
+
+  /orders/cancel-all:
+    post:
+      operationId: cancelAllOrders
+      tags: [orders]
+      summary: Cancel all active orders
+      description: Sets all PENDING_SUBMISSION, SUBMITTED, and PARTIALLY_FILLED orders to CANCEL_REQUESTED
+      responses:
+        "200":
+          description: Cancel result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancelAllResult"
+
+  /orders/{id}:
+    delete:
+      operationId: cancelOrder
+      tags: [orders]
+      summary: Cancel a single order
+      description: Sets a single active order to CANCEL_REQUESTED status
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Canceled order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancelOrderResult"
+        "404":
+          description: Order not found or already closed
+
+  /positions:
+    get:
+      operationId: listPositions
+      tags: [orders]
+      summary: List open positions
+      description: Returns all positions with non-zero net exposure or working quantity
+      responses:
+        "200":
+          description: Position list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PositionListResponse"
 
   /signals/counts:
     get:
@@ -568,6 +646,165 @@ components:
           type: integer
       required:
         - signals
+        - count
+
+    Order:
+      type: object
+      properties:
+        id:
+          type: integer
+        clordId:
+          type: string
+        signalId:
+          type: integer
+          nullable: true
+        marketId:
+          type: string
+        tokenId:
+          type: string
+        side:
+          type: string
+        price:
+          type: string
+        sizeUsdc:
+          type: string
+        strategy:
+          type: string
+        status:
+          type: string
+        exchangeOrderId:
+          type: string
+          nullable: true
+        workingQty:
+          type: string
+          nullable: true
+        filledQty:
+          type: string
+          nullable: true
+        fillPrice:
+          type: string
+          nullable: true
+        submittedAt:
+          type: string
+          format: date-time
+          nullable: true
+        filledAt:
+          type: string
+          format: date-time
+          nullable: true
+        canceledAt:
+          type: string
+          format: date-time
+          nullable: true
+        errorMsg:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+          nullable: true
+        question:
+          type: string
+          nullable: true
+      required:
+        - id
+        - clordId
+        - marketId
+        - tokenId
+        - side
+        - price
+        - sizeUsdc
+        - strategy
+        - status
+
+    OrderListResponse:
+      type: object
+      properties:
+        orders:
+          type: array
+          items:
+            $ref: "#/components/schemas/Order"
+        count:
+          type: integer
+      required:
+        - orders
+        - count
+
+    CancelOrderResult:
+      type: object
+      properties:
+        id:
+          type: integer
+        status:
+          type: string
+      required:
+        - id
+        - status
+
+    CancelAllResult:
+      type: object
+      properties:
+        canceled:
+          type: integer
+      required:
+        - canceled
+
+    Position:
+      type: object
+      properties:
+        id:
+          type: integer
+        marketId:
+          type: string
+        tokenId:
+          type: string
+        side:
+          type: string
+        totalBought:
+          type: string
+          nullable: true
+        totalSold:
+          type: string
+          nullable: true
+        workingBuy:
+          type: string
+          nullable: true
+        workingSell:
+          type: string
+          nullable: true
+        avgCost:
+          type: string
+          nullable: true
+        pnlRealized:
+          type: string
+          nullable: true
+        pnlOpen:
+          type: string
+          nullable: true
+        lastUpdated:
+          type: string
+          format: date-time
+          nullable: true
+        question:
+          type: string
+          nullable: true
+      required:
+        - id
+        - marketId
+        - tokenId
+        - side
+
+    PositionListResponse:
+      type: object
+      properties:
+        positions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Position"
+        count:
+          type: integer
+      required:
+        - positions
         - count
 
     SignalCountsResponse:
