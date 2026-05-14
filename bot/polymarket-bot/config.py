@@ -65,10 +65,6 @@ FEE_RATES = {
 }
 DEFAULT_FEE_RATE = (0.04, 1)  # fallback if category not matched
 
-# ── Odds shift engine ─────────────────────────────────────────────────────────
-ODDS_SHIFT_THRESHOLD    = 0.05   # minimum price delta (5¢) to emit a signal
-ODDS_SHIFT_MIN_HOURS    = 0.25   # minimum elapsed hours between snapshots to compute velocity
-
 # ── EV calculator ─────────────────────────────────────────────────────────────
 EV_MIN_THRESHOLD        = 0.03   # minimum EV (3%) to include annotation
 KELLY_FRACTION          = 0.25   # quarter Kelly — safer, less ruin risk
@@ -93,17 +89,9 @@ MICRO_EVENT_KEYWORDS: dict[str, list[str]] = {
     "geopolitical":  ["war", "invasion", "sanction", "nato", "missile", "attack", "troops"],
 }
 
-# ── Micro-spread engine ───────────────────────────────────────────────────────
-MICRO_SPREAD_THRESHOLD  = 0.04   # minimum spread to emit a micro-spread signal
-
 # ── Tail-yield engine ─────────────────────────────────────────────────────────
 YIELD_MIN_PRICE         = 0.95   # minimum YES price eligible for yield harvest
 YIELD_HOURS_TO_EXPIRY   = 48     # skip markets expiring beyond this many hours
-
-# ── Binary arb engine ─────────────────────────────────────────────────────────
-ARB_MIN_NET_MARGIN      = 0.015  # Require a guaranteed 1.5% net profit after category fees
-# Remove the static ARB_THRESHOLD. Let the engine calculate: 
-# Target Threshold = 1.0 - (FEE_RATES[category][0] + ARB_MIN_NET_MARGIN)
 
 # ── Execution layer — risk and strategy parameters ────────────────────────────
 # BANKROLL_USDC is read from the BANKROLL_USDC env var (set in Railway service variables).

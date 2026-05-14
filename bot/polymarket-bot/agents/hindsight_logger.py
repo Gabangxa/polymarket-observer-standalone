@@ -3,11 +3,9 @@
 # find signals emitted before it resolved and record the true outcome.
 #
 # Covers:
-#   odds_shift         — directional: direction field determines correct outcome
 #   tail_yield_engine — YES bet: always correct when resolved YES
 #
-# Skips: spread_harvesting, neg_risk_overround, binary_arb, micro_spread_scalp
-#   (those are handled by outcome_tracker's snapshot-comparison window)
+# Skips: spread_engine, neg_risk_overround — handled by outcome_tracker's snapshot window
 #
 # Resolution mapping:
 #   resolutionPrice == "1" → market resolved YES
@@ -19,8 +17,7 @@ import db
 
 logger = logging.getLogger(__name__)
 
-DIRECTIONAL_STRATEGIES = {"odds_shift"}
-TAIL_STRATEGIES        = {"tail_yield_engine"}
+TAIL_STRATEGIES = {"tail_yield_engine"}
 
 
 def _resolution_price(market_data: dict) -> float | None:
@@ -64,7 +61,7 @@ def run() -> dict:
 
     # Fetch all unresolved signals that need resolution-based outcome scoring
     all_unresolved = []
-    for strategy in DIRECTIONAL_STRATEGIES | TAIL_STRATEGIES:
+    for strategy in TAIL_STRATEGIES:
         signals = db.get_unresolved_signals(strategy=strategy, older_than_hours=0)
         all_unresolved.extend(signals)
 

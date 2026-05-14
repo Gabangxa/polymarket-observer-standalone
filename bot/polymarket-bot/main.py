@@ -1,5 +1,5 @@
 # main.py — run the full pipeline once
-# Order: schema init → scanner → collector → [spread, neg_risk, micro_spread, tail_yield, binary_arb, odds_shift] → outcome_tracker
+# Order: schema init → scanner → collector → [spread, neg_risk, tail_yield] → outcome_tracker
 
 import glob
 import json
@@ -36,8 +36,7 @@ import db
 from agents import market_scanner, data_collector
 from agents import spread_engine, neg_risk_engine, outcome_tracker
 from agents import hindsight_logger
-from agents import micro_spread_engine, tail_yield_engine, binary_arb_engine
-from agents import odds_shift_engine
+from agents import tail_yield_engine
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -94,9 +93,7 @@ def _update_signal_streaks(results: dict) -> None:
     now = datetime.now(timezone.utc).isoformat()
     agents = results.get("agents", {})
 
-    for engine in ("spread_engine", "neg_risk_engine",
-                   "micro_spread_engine", "tail_yield_engine", "binary_arb_engine",
-                   "odds_shift_engine"):
+    for engine in ("spread_engine", "neg_risk_engine", "tail_yield_engine"):
         result = agents.get(engine, {})
         if "error" in result:
             continue  # crashed run — don't touch the streak counter
@@ -164,12 +161,9 @@ def run_pipeline(skip_scan=False):
         results["agents"]["data_collector"] = {"error": str(e)}
 
     for name, agent in [
-        ("spread_engine",       spread_engine),
-        ("neg_risk_engine",     neg_risk_engine),
-        ("micro_spread_engine", micro_spread_engine),
-        ("tail_yield_engine",   tail_yield_engine),
-        ("binary_arb_engine",   binary_arb_engine),
-        ("odds_shift_engine",   odds_shift_engine),
+        ("spread_engine",     spread_engine),
+        ("neg_risk_engine",   neg_risk_engine),
+        ("tail_yield_engine", tail_yield_engine),
     ]:
         try:
             result = agent.run()
@@ -220,9 +214,7 @@ def _print_summary(results):
               f"{co.get('failed',0)} failed")
 
     total = 0
-    for engine in ["spread_engine", "neg_risk_engine",
-                   "micro_spread_engine", "tail_yield_engine", "binary_arb_engine",
-                   "odds_shift_engine"]:
+    for engine in ["spread_engine", "neg_risk_engine", "tail_yield_engine"]:
         e   = agents.get(engine, {})
         n   = e.get("signals", 0)
         total += n
