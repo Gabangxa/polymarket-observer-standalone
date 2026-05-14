@@ -6,6 +6,7 @@ import {
   Ban,
   CheckCircle2,
   Clock,
+  DollarSign,
   Loader2,
   TrendingUp,
   Wallet,
@@ -15,6 +16,7 @@ import {
 import {
   useLiveOrders,
   useLivePositions,
+  useLivePortfolio,
   useCancelOrder,
   useCancelAllOrders,
 } from "@/hooks/use-polymarket";
@@ -687,6 +689,7 @@ export default function Execution() {
   const { data: activeData } = useLiveOrders({ status: "active" });
   const { data: closedData } = useLiveOrders({ status: "closed", limit: 1 });
   const { data: positionsData } = useLivePositions();
+  const { data: portfolio } = useLivePortfolio();
 
   const cancelAllMutation = useCancelAllOrders({
     mutation: {
@@ -783,6 +786,18 @@ export default function Execution() {
 
       {/* ── Stats row ── */}
       <div className="flex flex-wrap gap-3">
+        {portfolio && (
+          <StatCard
+            icon={<DollarSign className="w-4 h-4" />}
+            label="Bankroll"
+            value={`$${portfolio.bankroll.toFixed(2)}`}
+            sub={
+              portfolio.bankroll > 0
+                ? `${(portfolio.deployedPct * 100).toFixed(1)}% deployed · $${portfolio.available.toFixed(2)} free`
+                : "BANKROLL_USDC not set"
+            }
+          />
+        )}
         <StatCard
           icon={<Wallet className="w-4 h-4" />}
           label="USDC at Risk"

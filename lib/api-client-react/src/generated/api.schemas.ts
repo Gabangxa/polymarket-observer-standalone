@@ -204,6 +204,21 @@ export interface SignalCountsResponse {
   counts: SignalCountsResponseCounts;
 }
 
+export interface PortfolioSummary {
+  /** Configured bankroll (BANKROLL_USDC env var on API server) */
+  bankroll: number;
+  /** Sum of sizeUsdc for all active orders */
+  atRisk: number;
+  /** bankroll minus atRisk */
+  available: number;
+  /** atRisk / bankroll as a fraction (0–1) */
+  deployedPct: number;
+  /** Sum of pnl_realized across all positions */
+  pnlRealized: number;
+  /** Sum of pnl_open across all positions */
+  pnlOpen: number;
+}
+
 export type UpsertMarketsBody = {
   markets: MarketInput[];
 };

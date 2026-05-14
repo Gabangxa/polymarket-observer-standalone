@@ -145,4 +145,33 @@ router.get("/positions", async (req, res) => {
   }
 });
 
+router.get("/portfolio", async (req, res) => {
+  try {
+    const bankroll = parseFloat(process.env.BANKROLL_USDC ?? "0");
+
+    const [riskRow] = await db
+      .select({ total: sql<string>`COALESCE(SUM(${ordersTable.sizeUsdc}::numeric), 0)` })
+      .from(ordersTable)
+      .where(inArray(ordersTable.status, ACTIVE_STATUSES));
+
+    const [pnlRow] = await db
+      .select({
+        realized: sql<string>`COALESCE(SUM(${positionsTable.pnlRealized}::numeric), 0)`,
+        open: sql<string>`COALESCE(SUM(${positionsTable.pnlOpen}::numeric), 0)`,
+      })
+      .from(positionsTable);
+
+    const atRisk = parseFloat(riskRow?.total ?? "0");
+    const available = Math.max(bankroll - atRisk, 0);
+    const deployedPct = bankroll > 0 ? atRisk / bankroll : 0;
+    const pnlRealized = parseFloat(pnlRow?.realized ?? "0");
+    const pnlOpen = parseFloat(pnlRow?.open ?? "0");
+
+    res.json({ bankroll, atRisk, available, deployedPct, pnlRealized, pnlOpen });
+  } catch (err) {
+    req.log.error({ err }, "Failed to get portfolio");
+    res.status(500).json({ error: "Failed to get portfolio" });
+  }
+});
+
 export default router;

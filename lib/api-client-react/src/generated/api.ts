@@ -26,6 +26,7 @@ import type {
   ListSnapshotsParams,
   MarketListResponse,
   OrderListResponse,
+  PortfolioSummary,
   PositionListResponse,
   SignalCountsResponse,
   SignalCreated,
@@ -1098,6 +1099,82 @@ export function useListPositions<
   request?: SecondParameter<typeof customFetch>;
 }): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getListPositionsQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Returns configured bankroll, live exposure, available capital, and aggregate PnL across all positions. Reads BANKROLL_USDC from the API server environment variable.
+ * @summary Portfolio summary
+ */
+export const getGetPortfolioUrl = () => {
+  return `/api/portfolio`;
+};
+
+export const getPortfolio = async (
+  options?: RequestInit,
+): Promise<PortfolioSummary> => {
+  return customFetch<PortfolioSummary>(getGetPortfolioUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetPortfolioQueryKey = () => {
+  return [`/api/portfolio`] as const;
+};
+
+export const getGetPortfolioQueryOptions = <
+  TData = Awaited<ReturnType<typeof getPortfolio>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getPortfolio>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetPortfolioQueryKey();
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getPortfolio>>> = ({
+    signal,
+  }) => getPortfolio({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getPortfolio>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetPortfolioQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getPortfolio>>
+>;
+export type GetPortfolioQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Portfolio summary
+ */
+
+export function useGetPortfolio<
+  TData = Awaited<ReturnType<typeof getPortfolio>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getPortfolio>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetPortfolioQueryOptions(options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

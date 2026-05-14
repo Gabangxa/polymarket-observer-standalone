@@ -261,6 +261,20 @@ paths:
               schema:
                 $ref: "#/components/schemas/PositionListResponse"
 
+  /portfolio:
+    get:
+      operationId: getPortfolio
+      tags: [orders]
+      summary: Portfolio summary
+      description: Returns configured bankroll, live exposure, available capital, and aggregate PnL across all positions. Reads BANKROLL_USDC from the API server environment variable.
+      responses:
+        "200":
+          description: Portfolio summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PortfolioSummary"
+
   /signals/counts:
     get:
       operationId: getSignalCounts
@@ -816,3 +830,32 @@ components:
             type: integer
       required:
         - counts
+
+    PortfolioSummary:
+      type: object
+      properties:
+        bankroll:
+          type: number
+          description: Configured bankroll (BANKROLL_USDC env var on API server)
+        atRisk:
+          type: number
+          description: Sum of sizeUsdc for all active orders
+        available:
+          type: number
+          description: bankroll minus atRisk
+        deployedPct:
+          type: number
+          description: atRisk / bankroll as a fraction (0–1)
+        pnlRealized:
+          type: number
+          description: Sum of pnl_realized across all positions
+        pnlOpen:
+          type: number
+          description: Sum of pnl_open across all positions
+      required:
+        - bankroll
+        - atRisk
+        - available
+        - deployedPct
+        - pnlRealized
+        - pnlOpen

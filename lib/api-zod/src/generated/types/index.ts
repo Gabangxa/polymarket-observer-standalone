@@ -19,6 +19,7 @@ export * from "./marketInput";
 export * from "./marketListResponse";
 export * from "./order";
 export * from "./orderListResponse";
+export * from "./portfolioSummary";
 export * from "./position";
 export * from "./positionListResponse";
 export * from "./signal";

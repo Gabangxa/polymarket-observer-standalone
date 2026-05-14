@@ -309,6 +309,23 @@ export const ListPositionsResponse = zod.object({
 });
 
 /**
+ * Returns configured bankroll, live exposure, available capital, and aggregate PnL across all positions. Reads BANKROLL_USDC from the API server environment variable.
+ * @summary Portfolio summary
+ */
+export const GetPortfolioResponse = zod.object({
+  bankroll: zod
+    .number()
+    .describe("Configured bankroll (BANKROLL_USDC env var on API server)"),
+  atRisk: zod.number().describe("Sum of sizeUsdc for all active orders"),
+  available: zod.number().describe("bankroll minus atRisk"),
+  deployedPct: zod.number().describe("atRisk \/ bankroll as a fraction (0–1)"),
+  pnlRealized: zod
+    .number()
+    .describe("Sum of pnl_realized across all positions"),
+  pnlOpen: zod.number().describe("Sum of pnl_open across all positions"),
+});
+
+/**
  * Returns signal counts per strategy for the last 24h
  * @summary Get signal counts
  */

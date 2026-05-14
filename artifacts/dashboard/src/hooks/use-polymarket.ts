@@ -8,6 +8,7 @@ import {
   getGetSignalCountsQueryOptions,
   getListOrdersQueryOptions,
   getListPositionsQueryOptions,
+  getGetPortfolioQueryOptions,
   useCancelOrder,
   useCancelAllOrders,
 } from "@workspace/api-client-react";
@@ -113,6 +114,13 @@ export function useLiveOrders(params?: ListOrdersParams) {
 export function useLivePositions() {
   return useQuery({
     ...getListPositionsQueryOptions(),
+    refetchInterval: POLLING_INTERVAL,
+  });
+}
+
+export function useLivePortfolio() {
+  return useQuery({
+    ...getGetPortfolioQueryOptions(),
     refetchInterval: POLLING_INTERVAL,
   });
 }
