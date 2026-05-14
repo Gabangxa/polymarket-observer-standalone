@@ -876,31 +876,37 @@ def upsert_position(
     delta_sold: float = 0,
     delta_working_buy: float = 0,
     delta_working_sell: float = 0,
-    avg_cost: float = None,
+    avg_cost: float = None,       # fill price for this transaction (buy or sell)
     pnl_realized_delta: float = 0,
 ) -> None:
     """
-    Create or update a position row by applying deltas.
-    All quantity changes are additive so concurrent updates don't race.
-    avg_cost is only written when explicitly provided (on fill).
+    Create or update a position row by applying deltas. All qty changes are
+    additive so concurrent updates don't race.
+
+    avg_cost is the fill price for THIS transaction (not a target avg_cost):
+      - On a BUY fill  → used to compute the new VWAP avg_cost.
+      - On a SELL fill → used to compute realized PnL = (fill - avg_cost) × sold.
+      Both computations are done atomically in SQL; no pre-read is required.
+
+    VWAP formula (buy fills only):
+      new_avg_cost = (old_avg_cost × old_shares + fill_price × delta_bought)
+                     / (old_shares + delta_bought)
+
+    Realized PnL formula (sell fills only):
+      pnl_realized += (sell_fill_price − avg_cost) × delta_sold
     """
     params: dict = {
-        "market_id": market_id,
-        "token_id": token_id,
-        "side": side,
-        "delta_bought": delta_bought,
-        "delta_sold": delta_sold,
+        "market_id":         market_id,
+        "token_id":          token_id,
+        "side":              side,
+        "delta_bought":      delta_bought,
+        "delta_sold":        delta_sold,
         "delta_working_buy": delta_working_buy,
-        "delta_working_sell": delta_working_sell,
-        "pnl_realized_delta": pnl_realized_delta,
-        "avg_cost": avg_cost,
+        "delta_working_sell":delta_working_sell,
+        "pnl_realized_delta":pnl_realized_delta,
+        "avg_cost":          avg_cost,
     }
-    avg_cost_clause = (
-        "avg_cost = %(avg_cost)s,"
-        if avg_cost is not None
-        else ""
-    )
-    sql = f"""
+    sql = """
         INSERT INTO positions (market_id, token_id, side, total_bought, total_sold,
             working_buy, working_sell, avg_cost, pnl_realized, last_updated)
         VALUES (%(market_id)s, %(token_id)s, %(side)s,
@@ -912,8 +918,23 @@ def upsert_position(
             total_sold    = positions.total_sold    + %(delta_sold)s,
             working_buy   = positions.working_buy   + %(delta_working_buy)s,
             working_sell  = positions.working_sell  + %(delta_working_sell)s,
-            {avg_cost_clause}
-            pnl_realized  = positions.pnl_realized  + %(pnl_realized_delta)s,
+            avg_cost = CASE
+                WHEN %(delta_bought)s > 0 AND %(avg_cost)s IS NOT NULL
+                THEN (
+                    COALESCE(positions.avg_cost,    0) * COALESCE(positions.total_bought, 0)
+                    + %(avg_cost)s::numeric          * %(delta_bought)s::numeric
+                ) / NULLIF(
+                    COALESCE(positions.total_bought, 0) + %(delta_bought)s::numeric,
+                    0
+                )
+                ELSE positions.avg_cost
+            END,
+            pnl_realized  = positions.pnl_realized + CASE
+                WHEN %(delta_sold)s > 0 AND %(avg_cost)s IS NOT NULL
+                THEN (%(avg_cost)s::numeric - COALESCE(positions.avg_cost, 0))
+                     * %(delta_sold)s::numeric
+                ELSE %(pnl_realized_delta)s
+            END,
             last_updated  = NOW()
     """
     with get_conn() as conn:

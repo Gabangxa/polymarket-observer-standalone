@@ -425,16 +425,29 @@ def poll_order_status(order: dict, client) -> None:
         canceled_at=datetime.now(timezone.utc) if new_status == "CANCELED" else None,
     )
 
-    # Update positions: convert working → bought on new fills
+    # Update positions based on order direction.
+    # BUY fills: increase total_bought, update VWAP avg_cost (no realized PnL yet).
+    # SELL fills: increase total_sold, lock realized PnL = (fill - avg_cost) × sold.
+    # Both are computed atomically inside upsert_position — no separate read needed.
     delta_fill    = filled_qty - prev_filled
     delta_working = remaining_qty - prev_working
+    order_side    = order.get("side", "BUY")
+    pos_side      = "YES"   # bot currently only trades YES-outcome tokens
     if delta_fill != 0 or delta_working != 0:
-        db.upsert_position(
-            market_id, token_id, "YES",
-            delta_bought=float(delta_fill),
-            delta_working_buy=float(delta_working),
-            avg_cost=float(fill_price) if fill_price else None,
-        )
+        if order_side == "BUY":
+            db.upsert_position(
+                market_id, token_id, pos_side,
+                delta_bought=float(delta_fill),
+                delta_working_buy=float(delta_working),
+                avg_cost=float(fill_price) if fill_price else None,
+            )
+        else:
+            db.upsert_position(
+                market_id, token_id, pos_side,
+                delta_sold=float(delta_fill),
+                delta_working_sell=float(delta_working),
+                avg_cost=float(fill_price) if fill_price else None,
+            )
 
     if new_status == "FILLED" and fill_price:
         strategy = order.get("strategy", "")
