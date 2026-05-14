@@ -34,6 +34,7 @@ router.get("/signals", async (req, res) => {
     const marketId = req.query.marketId as string | undefined;
     const hours = Math.min(Number(req.query.hours) || 24, 336);
     const limit = Math.min(Number(req.query.limit) || 100, 500);
+    const resolvedParam = req.query.resolved as string | undefined;
 
     const cutoff = sql`NOW() - ${hours} * INTERVAL '1 hour'`;
 
@@ -43,6 +44,9 @@ router.get("/signals", async (req, res) => {
     }
     if (marketId) {
       conditions.push(eq(signalsTable.marketId, marketId));
+    }
+    if (resolvedParam !== undefined) {
+      conditions.push(eq(signalsTable.resolved, resolvedParam === "true"));
     }
 
     const signals = await db

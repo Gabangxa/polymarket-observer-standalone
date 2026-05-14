@@ -181,6 +181,7 @@ export const ListSignalsQueryParams = zod.object({
   strategy: zod.coerce.string().optional(),
   hours: zod.coerce.number().default(listSignalsQueryHoursDefault),
   limit: zod.coerce.number().default(listSignalsQueryLimitDefault),
+  resolved: zod.coerce.boolean().optional(),
 });
 
 export const ListSignalsResponse = zod.object({

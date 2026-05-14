@@ -162,4 +162,5 @@ export type ListSignalsParams = {
   strategy?: string;
   hours?: number;
   limit?: number;
+  resolved?: boolean;
 };

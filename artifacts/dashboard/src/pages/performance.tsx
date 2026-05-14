@@ -93,11 +93,15 @@ const STRATEGY_LABELS: Record<string, string> = {
 export default function Performance() {
   const { timezone } = useTimezone();
   const { data: perf, isLoading: perfLoading, isError: perfError } = useStrategyPerformance();
-  const { data: signalsData, isLoading: signalsLoading } = useLiveSignals({ hours: 336, limit: 500 });
+  const { data: resolvedSignalsData, isLoading: signalsLoading } = useLiveSignals({
+    hours: 336,
+    limit: 500,
+    resolved: true,
+  });
 
   const [betSize, setBetSize] = useState<number>(loadBetSize);
 
-  const trendData = signalsData ? buildTrend(signalsData.signals, timezone) : [];
+  const trendData = resolvedSignalsData ? buildTrend(resolvedSignalsData.signals, timezone) : [];
 
   // Aggregate totals for summary cards
   const totalSignals   = perf?.strategies.reduce((a, s) => a + s.signalCount, 0) ?? 0;

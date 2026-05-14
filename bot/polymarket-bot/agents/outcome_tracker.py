@@ -14,7 +14,8 @@ import db
 logger = logging.getLogger(__name__)
 
 RESOLUTION_WINDOWS = {
-    "spread_engine":      2,
+    "spread_engine":      2,     # current strategy name written by spread_engine.py
+    "spread_harvesting":  2,     # legacy name — kept until old signals age out
     "neg_risk_overround": 6,
     "odds_shift":         4,
     "binary_arb":         0.5,   # 30-min arb-persistence check
@@ -152,7 +153,7 @@ def run():
             try:
                 market_id = signal.get("market_id")
 
-                if strategy == "spread_engine":
+                if strategy in ("spread_engine", "spread_harvesting"):
                     if not market_id or market_id not in snapshots_by_market:
                         skipped_total += 1
                         continue
