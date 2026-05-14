@@ -12,6 +12,7 @@
 #   pm.execution.filled.{strategy}.{market_id}      — order fully filled
 #   pm.execution.rejected.{strategy}.{market_id}    — order rejected after retries
 #   pm.execution.repriced.{strategy}.{market_id}    — GTD-expired order repriced
+#   pm.execution.exit.{strategy}.{market_id}        — take-profit SELL order placed
 #   pm.heartbeat.executor                            — executor liveness tick
 
 import atexit

@@ -109,6 +109,16 @@ EXECUTION_MIN_SCORE   = 0.75   # minimum signal score to execute
 ORDER_TTL_SPREAD_SECS   = 600    # spread_engine: 10 min — stale quote = no edge
 ORDER_TTL_NEG_RISK_SECS = 120    # neg_risk_overround: 2 min — arb closes fast, partial fills are risky
 ORDER_TTL_TAIL_SECS     = 3600   # tail_yield_engine: 60 min — near-certain prices move slowly
+ORDER_TTL_EXIT_SECS     = 3600   # exit orders: 60 min — if unfilled in an hour, market is illiquid
+
+# ── Exit manager — take-profit thresholds ─────────────────────────────────────
+# tail_yield: exit when price ≥ entry + TAIL_YIELD_TP_RATIO × (1.0 - entry)
+#   e.g. ratio=0.5, entry=0.96 → exit at 0.98 (half the remaining gap to $1.00 captured)
+TAIL_YIELD_TP_RATIO     = 0.5
+
+# spread_engine: exit when price ≥ entry + SPREAD_TP_PIPS above entry price
+#   e.g. entry=0.55, pips=0.02 → exit at 0.57 (captured more than the spread)
+SPREAD_TP_PIPS          = 0.02
 
 # ── Infrastructure — set in Railway service variables, never in code ──────────
 # BANKROLL_USDC        — USDC allocated to execution  (read above in this file)

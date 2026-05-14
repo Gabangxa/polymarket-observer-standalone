@@ -13,7 +13,7 @@ from decimal import Decimal, ROUND_DOWN
 import alerts
 import db
 import nats_bus
-from config import ORDER_MAX_RETRIES, ORDER_TTL_SPREAD_SECS, ORDER_TTL_NEG_RISK_SECS, ORDER_TTL_TAIL_SECS
+from config import ORDER_MAX_RETRIES, ORDER_TTL_SPREAD_SECS, ORDER_TTL_NEG_RISK_SECS, ORDER_TTL_TAIL_SECS, ORDER_TTL_EXIT_SECS
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,8 @@ def _gtd_expiration(strategy: str) -> int:
         ttl = ORDER_TTL_SPREAD_SECS
     elif strategy == "neg_risk_overround":
         ttl = ORDER_TTL_NEG_RISK_SECS
+    elif strategy == "exit":
+        ttl = ORDER_TTL_EXIT_SECS
     else:
         ttl = ORDER_TTL_TAIL_SECS
     return int(time.time()) + _GTD_BUFFER_SECS + ttl
@@ -491,6 +493,108 @@ def cancel_order(clord_id: str, exchange_order_id: str, client) -> bool:
     except Exception as e:
         logger.error(f"Cancel failed for clord_id={clord_id}: {e}")
         return False
+
+
+def place_exit_order(position: dict, price: float, client) -> dict:
+    """
+    Place a SELL GTD order to close an open position at the given price.
+
+    position dict must contain: market_id, token_id, net_shares, strategy.
+    price is the current yes_price from the snapshot that triggered the exit.
+
+    The order is recorded with strategy='exit_{original_strategy}' so it is
+    distinguishable in the blotter and excluded from strategy-seeding queries.
+    Returns {"ok": bool, "clord_id": str, "error": str|None}.
+    """
+    market_id  = position["market_id"]
+    token_id   = position["token_id"]
+    net_shares = Decimal(str(position["net_shares"]))
+    orig_strat = position.get("strategy", "unknown")
+    strategy   = f"exit_{orig_strat}"
+
+    if net_shares <= 0:
+        return {"ok": False, "clord_id": None, "error": "zero net shares — nothing to exit"}
+
+    price_d      = Decimal(str(price)).quantize(Decimal("0.001"), rounding=ROUND_DOWN)
+    size_shares  = net_shares.quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
+    size_usdc    = (price_d * size_shares).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+
+    # Use signal_id=0 sentinel — exits have no originating signal
+    clord_id      = _make_clord_id("exit", 0)
+    expiration    = _gtd_expiration("exit")
+    expiration_dt = datetime.fromtimestamp(expiration, tz=timezone.utc)
+
+    try:
+        db.insert_order({
+            "clord_id":      clord_id,
+            "signal_id":     None,
+            "market_id":     market_id,
+            "token_id":      token_id,
+            "side":          "SELL",
+            "price":         float(price_d),
+            "size_usdc":     float(size_usdc),
+            "strategy":      strategy,
+            "expiration_ts": expiration_dt,
+            "reprice_of":    None,
+        })
+    except Exception as e:
+        logger.error(f"DB insert failed for exit clord_id={clord_id}: {e}")
+        return {"ok": False, "clord_id": clord_id, "error": f"db error: {e}"}
+
+    # Record working sell quantity before touching the CLOB
+    db.upsert_position(market_id, token_id, "YES", delta_working_sell=float(size_shares))
+
+    try:
+        from py_clob_client.clob_types import OrderArgs, OrderType
+        order_args = OrderArgs(
+            token_id=token_id,
+            price=float(price_d),
+            size=float(size_shares),
+            side="SELL",
+        )
+
+        def _submit():
+            return client.create_and_post_order(
+                order_args,
+                order_type=OrderType.GTD,
+                expiration=expiration,
+            )
+
+        db.update_order_status(clord_id, "SENT", submitted_at=datetime.now(timezone.utc))
+        response = _backoff_retry(_submit)
+
+        exchange_order_id = response.get("orderID") or response.get("id", "")
+        db.update_order_status(
+            clord_id, "OPEN",
+            exchange_order_id=exchange_order_id,
+            working_qty=float(size_shares),
+        )
+
+        logger.info(
+            f"Exit order placed | clord_id={clord_id} | exchange_id={exchange_order_id} "
+            f"| strategy={orig_strat} | market={market_id} "
+            f"| price={price_d} | shares={size_shares}"
+        )
+        nats_bus.publish(
+            f"pm.execution.exit.{orig_strat}.{market_id}",
+            {
+                "clord_id":          clord_id,
+                "exchange_order_id": exchange_order_id,
+                "strategy":          orig_strat,
+                "market_id":         market_id,
+                "price":             float(price_d),
+                "size_usdc":         float(size_usdc),
+                "ts":                datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return {"ok": True, "clord_id": clord_id, "error": None}
+
+    except Exception as e:
+        logger.error(f"Exit order submission failed | clord_id={clord_id}: {e}")
+        db.update_order_status(clord_id, "REJECTED", error_msg=str(e))
+        # Undo working_sell delta so position state stays accurate
+        db.upsert_position(market_id, token_id, "YES", delta_working_sell=-float(size_shares))
+        return {"ok": False, "clord_id": clord_id, "error": str(e)}
 
 
 def cancel_all_open_orders(client) -> dict:

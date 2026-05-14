@@ -1039,6 +1039,40 @@ def get_all_open_positions() -> list[dict]:
             return [dict(r) for r in cur.fetchall()]
 
 
+def get_open_positions_with_strategy(market_id: str = None) -> list[dict]:
+    """
+    Return open positions annotated with the strategy that created them.
+    Uses a LATERAL join on orders (most recent non-exit filled/open order) to
+    determine strategy. Exit orders (strategy LIKE 'exit_%') are skipped so a
+    repriced exit does not overwrite the original entry strategy.
+
+    market_id: if given, restricts to one market (used for fill-event refreshes).
+    """
+    extra_where = "AND p.market_id = %(market_id)s" if market_id else ""
+    params: dict = {"market_id": market_id}
+    sql = f"""
+        SELECT
+            p.*,
+            COALESCE(o.strategy, '') AS strategy
+        FROM positions p
+        LEFT JOIN LATERAL (
+            SELECT strategy FROM orders
+            WHERE market_id = p.market_id
+              AND token_id  = p.token_id
+              AND status IN ('FILLED', 'PARTIALLY_FILLED', 'OPEN')
+              AND strategy NOT LIKE 'exit_%%'
+            ORDER BY created_at DESC
+            LIMIT 1
+        ) o ON true
+        WHERE (COALESCE(p.total_bought, 0) - COALESCE(p.total_sold, 0)) > 0
+        {extra_where}
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            return [dict(r) for r in cur.fetchall()]
+
+
 def get_latest_snapshots_for_markets(market_ids: list[str]) -> list[dict]:
     """Return the most recent snapshot for each market in the given list.
     Returns only the fields needed for PnL computation."""

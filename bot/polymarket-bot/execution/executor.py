@@ -24,7 +24,7 @@ from config import (
     EXECUTOR_POLL_SECS,
     MAX_SIGNAL_AGE_SECS,
 )
-from execution import pre_trade_gate, order_manager
+from execution import pre_trade_gate, order_manager, exit_manager
 from execution.auth import get_client
 
 logger = logging.getLogger(__name__)
@@ -261,6 +261,10 @@ def start_executor() -> threading.Thread:
     Start the executor as a daemon thread. Returns the thread (already started).
     Call once from scheduler.py before the pipeline loop.
     """
+    # Exit manager: seed position index + register NATS subscriptions for TP exits.
+    # Must run before the NATS worker starts so subscriptions are registered in time.
+    exit_manager.start()
+
     # Fast-path wake: register NATS subscription before starting the thread
     # so the worker picks it up when it connects. Falls back to timed poll
     # if NATS_URL is unset.
