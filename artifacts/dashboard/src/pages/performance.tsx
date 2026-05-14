@@ -54,29 +54,38 @@ function winRateColor(rate: number | string | null | undefined): string {
 // Build daily accuracy trend from raw signals data
 function buildTrend(signals: any[], tz: string) {
   const resolved = signals.filter((s) => s.resolved);
-  const byDay: Record<string, { wins: number; total: number }> = {};
+  const byDay: Record<string, { wins: number; total: number; ts: number }> = {};
 
   for (const s of resolved) {
     if (!s.emittedAt) continue;
     const day = formatInTz(s.emittedAt, "MMM dd", tz);
-    if (!byDay[day]) byDay[day] = { wins: 0, total: 0 };
+    const ts  = new Date(s.emittedAt).getTime();
+    if (!byDay[day]) byDay[day] = { wins: 0, total: 0, ts };
     byDay[day].total += 1;
     if (s.outcome === true) byDay[day].wins += 1;
+    // keep earliest timestamp per day so sort order is stable
+    if (ts < byDay[day].ts) byDay[day].ts = ts;
   }
 
   return Object.entries(byDay)
-    .map(([day, { wins, total }]) => ({
+    .map(([day, { wins, total, ts }]) => ({
       day,
       winRate: total > 0 ? Math.round((wins / total) * 100) : 0,
       total,
+      ts,
     }))
-    .slice(-14); // last 14 days
+    .sort((a, b) => a.ts - b.ts)   // chronological order (API returns DESC)
+    .slice(-14)
+    .map(({ day, winRate, total }) => ({ day, winRate, total }));
 }
 
 const STRATEGY_LABELS: Record<string, string> = {
-  spread_harvesting:  "Spread",
+  spread_engine:      "Spread",
   neg_risk_overround: "Neg Risk",
-  mean_reversion:     "Reversion",
+  tail_yield_engine:  "Tail Yield",
+  odds_shift:         "Odds Shift",
+  binary_arb:         "Binary Arb",
+  micro_spread_scalp: "Micro Spread",
 };
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -84,7 +93,7 @@ const STRATEGY_LABELS: Record<string, string> = {
 export default function Performance() {
   const { timezone } = useTimezone();
   const { data: perf, isLoading: perfLoading, isError: perfError } = useStrategyPerformance();
-  const { data: signalsData, isLoading: signalsLoading } = useLiveSignals({ hours: 168, limit: 500 });
+  const { data: signalsData, isLoading: signalsLoading } = useLiveSignals({ hours: 336, limit: 500 });
 
   const [betSize, setBetSize] = useState<number>(loadBetSize);
 

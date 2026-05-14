@@ -32,7 +32,7 @@ router.get("/signals", async (req, res) => {
   try {
     const strategy = req.query.strategy as string | undefined;
     const marketId = req.query.marketId as string | undefined;
-    const hours = Math.min(Number(req.query.hours) || 24, 168);
+    const hours = Math.min(Number(req.query.hours) || 24, 336);
     const limit = Math.min(Number(req.query.limit) || 100, 500);
 
     const cutoff = sql`NOW() - ${hours} * INTERVAL '1 hour'`;
