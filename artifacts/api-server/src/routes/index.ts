@@ -5,6 +5,7 @@ import snapshotsRouter from "./snapshots";
 import signalsRouter from "./signals";
 import strategiesRouter from "./strategies";
 import ordersRouter from "./orders";
+import configRouter from "./config";
 
 const router: IRouter = Router();
 
@@ -14,5 +15,6 @@ router.use(snapshotsRouter);
 router.use(signalsRouter);
 router.use(strategiesRouter);
 router.use(ordersRouter);
+router.use(configRouter);
 
 export default router;

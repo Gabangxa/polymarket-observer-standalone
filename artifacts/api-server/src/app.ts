@@ -34,7 +34,8 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", (req, res, next) => {
   const mutating = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method);
-  if (mutating) return requireApiKey(req, res, next);
+  // /api/config/* is dashboard-internal configuration — no API key required
+  if (mutating && !req.path.startsWith("/config/")) return requireApiKey(req, res, next);
   return next();
 });
 app.use("/api", router);

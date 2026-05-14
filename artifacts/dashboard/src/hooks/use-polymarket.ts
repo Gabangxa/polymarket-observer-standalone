@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   getHealthCheckQueryOptions,
   getListMarketsQueryOptions,
@@ -122,6 +122,24 @@ export function useLivePortfolio() {
   return useQuery({
     ...getGetPortfolioQueryOptions(),
     refetchInterval: POLLING_INTERVAL,
+  });
+}
+
+export function useSetBankroll() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (bankroll: number) => {
+      const res = await fetch("/api/config/bankroll", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bankroll }),
+      });
+      if (!res.ok) throw new Error("Failed to save bankroll");
+      return res.json() as Promise<{ bankroll: number }>;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/portfolio"] });
+    },
   });
 }
 

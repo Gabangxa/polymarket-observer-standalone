@@ -13,7 +13,6 @@ from decimal import Decimal
 
 import db
 from config import (
-    BANKROLL_USDC,
     EXECUTION_STRATEGIES,
     MAX_PORTFOLIO_PCT,
     MAX_POSITION_PCT,
@@ -21,9 +20,6 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
-
-_MAX_EXPOSURE_PER_POSITION = Decimal(str(MAX_POSITION_PCT))  * Decimal(str(BANKROLL_USDC))
-_MAX_PORTFOLIO_EXPOSURE    = Decimal(str(MAX_PORTFOLIO_PCT)) * Decimal(str(BANKROLL_USDC))
 
 
 def check(signal: dict) -> tuple[bool, str]:
@@ -39,9 +35,10 @@ def check(signal: dict) -> tuple[bool, str]:
     if strategy not in EXECUTION_STRATEGIES:
         return False, f"strategy '{strategy}' not in execution allowlist"
 
-    # Gate 2: bankroll configured (no DB)
-    if BANKROLL_USDC <= 0:
-        return False, "BANKROLL_USDC is not set or zero — cannot size orders"
+    # Gate 2: bankroll configured
+    bankroll = db.get_bankroll()
+    if bankroll <= 0:
+        return False, "Bankroll is not set or zero — configure it in the dashboard"
 
     # Gate 3: signal freshness (no DB)
     emitted_at = signal.get("emitted_at")
@@ -57,14 +54,14 @@ def check(signal: dict) -> tuple[bool, str]:
         return False, f"order already exists for signal_id={signal_id}"
 
     # Gate 5: total portfolio exposure cap
-    approved, reason = _check_portfolio_exposure()
+    approved, reason = _check_portfolio_exposure(bankroll)
     if not approved:
         return False, reason
 
     # Gate 6: per-position exposure headroom
     token_ids = signal.get("token_ids") or []
     if token_ids:
-        approved, reason = _check_position_exposure(market_id, token_ids[0])
+        approved, reason = _check_position_exposure(market_id, token_ids[0], bankroll)
         if not approved:
             return False, reason
 
@@ -83,16 +80,17 @@ def check_reprice(signal: dict) -> tuple[bool, str]:
     """
     market_id = signal.get("market_id", "")
 
-    if BANKROLL_USDC <= 0:
-        return False, "BANKROLL_USDC is not set or zero"
+    bankroll = db.get_bankroll()
+    if bankroll <= 0:
+        return False, "Bankroll is not set or zero — configure it in the dashboard"
 
-    approved, reason = _check_portfolio_exposure()
+    approved, reason = _check_portfolio_exposure(bankroll)
     if not approved:
         return False, reason
 
     token_ids = signal.get("token_ids") or []
     if token_ids:
-        approved, reason = _check_position_exposure(market_id, token_ids[0])
+        approved, reason = _check_position_exposure(market_id, token_ids[0], bankroll)
         if not approved:
             return False, reason
 
@@ -101,30 +99,32 @@ def check_reprice(signal: dict) -> tuple[bool, str]:
 
 # ── Shared exposure checks ────────────────────────────────────────────────────
 
-def _check_portfolio_exposure() -> tuple[bool, str]:
+def _check_portfolio_exposure(bankroll: float) -> tuple[bool, str]:
     """Total USDC committed across all open and filled-but-held orders."""
+    cap = Decimal(str(MAX_PORTFOLIO_PCT)) * Decimal(str(bankroll))
     total = Decimal(str(db.get_total_open_exposure()))
-    if total >= _MAX_PORTFOLIO_EXPOSURE:
+    if total >= cap:
         return False, (
             f"portfolio exposure {total:.2f} USDC >= "
-            f"cap {_MAX_PORTFOLIO_EXPOSURE:.2f} USDC "
-            f"({MAX_PORTFOLIO_PCT*100:.0f}% of {BANKROLL_USDC} bankroll)"
+            f"cap {cap:.2f} USDC "
+            f"({MAX_PORTFOLIO_PCT*100:.0f}% of {bankroll} bankroll)"
         )
     return True, ""
 
 
-def _check_position_exposure(market_id: str, token_id: str) -> tuple[bool, str]:
+def _check_position_exposure(market_id: str, token_id: str, bankroll: float) -> tuple[bool, str]:
     """Per-position cap: filled + working must be below MAX_POSITION_PCT × BANKROLL."""
+    cap = Decimal(str(MAX_POSITION_PCT)) * Decimal(str(bankroll))
     position = db.get_position(market_id, token_id, "YES")
     if position:
         total_exposure = (
             Decimal(str(position["total_bought"])) +
             Decimal(str(position["working_buy"]))
         )
-        if total_exposure >= _MAX_EXPOSURE_PER_POSITION:
+        if total_exposure >= cap:
             return False, (
                 f"position exposure {total_exposure:.2f} USDC >= "
-                f"per-position cap {_MAX_EXPOSURE_PER_POSITION:.2f} USDC "
-                f"({MAX_POSITION_PCT*100:.0f}% of {BANKROLL_USDC} bankroll)"
+                f"per-position cap {cap:.2f} USDC "
+                f"({MAX_POSITION_PCT*100:.0f}% of {bankroll} bankroll)"
             )
     return True, ""

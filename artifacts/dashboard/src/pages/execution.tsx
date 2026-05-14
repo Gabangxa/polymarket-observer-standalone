@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { motion } from "framer-motion";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -8,6 +8,7 @@ import {
   Clock,
   DollarSign,
   Loader2,
+  Pencil,
   TrendingUp,
   Wallet,
   XCircle,
@@ -19,6 +20,7 @@ import {
   useLivePortfolio,
   useCancelOrder,
   useCancelAllOrders,
+  useSetBankroll,
 } from "@/hooks/use-polymarket";
 import { TableSkeleton, Badge } from "@/components/ui-elements";
 import {
@@ -690,6 +692,18 @@ export default function Execution() {
   const { data: closedData } = useLiveOrders({ status: "closed", limit: 1 });
   const { data: positionsData } = useLivePositions();
   const { data: portfolio } = useLivePortfolio();
+  const setBankroll = useSetBankroll();
+  const [editingBankroll, setEditingBankroll] = useState(false);
+  const [bankrollInput, setBankrollInput] = useState("");
+  const bankrollInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editingBankroll) {
+      setBankrollInput(String(parseNumeric(portfolio?.bankroll)));
+      bankrollInputRef.current?.focus();
+      bankrollInputRef.current?.select();
+    }
+  }, [editingBankroll, portfolio?.bankroll]);
 
   const cancelAllMutation = useCancelAllOrders({
     mutation: {
@@ -786,18 +800,89 @@ export default function Execution() {
 
       {/* ── Stats row ── */}
       <div className="flex flex-wrap gap-3">
-        {portfolio && (
-          <StatCard
-            icon={<DollarSign className="w-4 h-4" />}
-            label="Bankroll"
-            value={`$${parseNumeric(portfolio.bankroll).toFixed(2)}`}
-            sub={
-              parseNumeric(portfolio.bankroll) > 0
-                ? `${(parseNumeric(portfolio.deployedPct) * 100).toFixed(1)}% deployed · $${parseNumeric(portfolio.available).toFixed(2)} free`
-                : "BANKROLL_USDC not set"
-            }
-          />
-        )}
+        <div
+          className="terminal-panel flex items-center gap-4 px-5 py-4"
+          style={{ minWidth: 160 }}
+        >
+          <div
+            className="w-9 h-9 rounded-sm flex items-center justify-center shrink-0"
+            style={{
+              background: "color-mix(in srgb, var(--color-accent-primary) 10%, transparent)",
+              border: "1px solid color-mix(in srgb, var(--color-accent-primary) 20%, transparent)",
+            }}
+          >
+            <DollarSign className="w-4 h-4" style={{ color: "var(--color-accent-primary)" }} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-xs font-mono flex items-center gap-2" style={{ color: "var(--color-text-tertiary)" }}>
+              Bankroll
+              <button
+                onClick={() => setEditingBankroll(true)}
+                className="opacity-50 hover:opacity-100 transition-opacity"
+                title="Edit bankroll"
+              >
+                <Pencil className="w-3 h-3" />
+              </button>
+            </div>
+            {editingBankroll ? (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const val = parseFloat(bankrollInput);
+                  if (!isNaN(val) && val >= 0) {
+                    setBankroll.mutate(val, { onSettled: () => setEditingBankroll(false) });
+                  }
+                }}
+                className="flex items-center gap-1 mt-0.5"
+              >
+                <span className="text-lg font-bold font-mono" style={{ color: "var(--color-text-primary)" }}>$</span>
+                <input
+                  ref={bankrollInputRef}
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={bankrollInput}
+                  onChange={(e) => setBankrollInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Escape" && setEditingBankroll(false)}
+                  className="w-28 text-lg font-bold font-mono bg-transparent border-b outline-none"
+                  style={{
+                    color: "var(--color-text-primary)",
+                    borderColor: "var(--color-accent-primary)",
+                  }}
+                />
+                <button
+                  type="submit"
+                  disabled={setBankroll.isPending}
+                  className="text-xs font-mono px-2 py-0.5 rounded-sm"
+                  style={{
+                    color: "var(--color-accent-primary)",
+                    background: "color-mix(in srgb, var(--color-accent-primary) 15%, transparent)",
+                    border: "1px solid var(--color-accent-primary)",
+                  }}
+                >
+                  {setBankroll.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : "Save"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingBankroll(false)}
+                  className="text-xs font-mono px-2 py-0.5 rounded-sm"
+                  style={{ color: "var(--color-text-tertiary)" }}
+                >
+                  ✕
+                </button>
+              </form>
+            ) : (
+              <div className="text-lg font-bold font-mono" style={{ color: "var(--color-text-primary)" }}>
+                ${parseNumeric(portfolio?.bankroll).toFixed(2)}
+              </div>
+            )}
+            <div className="text-[10px] font-mono" style={{ color: "var(--color-text-tertiary)" }}>
+              {parseNumeric(portfolio?.bankroll) > 0
+                ? `${(parseNumeric(portfolio?.deployedPct) * 100).toFixed(1)}% deployed · $${parseNumeric(portfolio?.available).toFixed(2)} free`
+                : "click ✎ to set bankroll"}
+            </div>
+          </div>
+        </div>
         <StatCard
           icon={<Wallet className="w-4 h-4" />}
           label="USDC at Risk"

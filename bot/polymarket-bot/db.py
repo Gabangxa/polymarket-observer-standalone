@@ -242,6 +242,12 @@ CREATE TABLE IF NOT EXISTS positions (
     last_updated  TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (market_id, token_id, side)
 );
+
+CREATE TABLE IF NOT EXISTS bot_config (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
 """
 
 
@@ -1159,3 +1165,42 @@ def get_db_stats() -> dict:
         "signals":       signals,
         "last_snapshot": last_snapshot.isoformat() if last_snapshot else None,
     }
+
+
+# ── bot_config table ──────────────────────────────────────────────────────────
+
+def get_config(key: str, default: str | None = None) -> str | None:
+    """Return a config value by key, or default if not set."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT value FROM bot_config WHERE key = %s", (key,))
+            row = cur.fetchone()
+            return row["value"] if row else default
+
+
+def set_config(key: str, value: str) -> None:
+    """Upsert a config value."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO bot_config (key, value, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (key) DO UPDATE
+                    SET value = EXCLUDED.value, updated_at = NOW()
+            """, (key, value))
+
+
+def get_bankroll() -> float:
+    """
+    Return the current bankroll USDC from bot_config, falling back to the
+    BANKROLL_USDC env var. Returns 0.0 if neither is set or both are invalid.
+    """
+    raw = get_config("bankroll_usdc")
+    if raw is not None:
+        try:
+            val = float(raw)
+            return val if val > 0 else 0.0
+        except (ValueError, TypeError):
+            pass
+    env_val = float(os.environ.get("BANKROLL_USDC", "0.0") or "0.0")
+    return env_val if env_val > 0 else 0.0

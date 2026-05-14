@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { ordersTable, positionsTable, marketsTable } from "@workspace/db/schema";
+import { ordersTable, positionsTable, marketsTable, botConfigTable } from "@workspace/db/schema";
 import { desc, eq, inArray, sql } from "drizzle-orm";
 
 const router: IRouter = Router();
@@ -147,7 +147,14 @@ router.get("/positions", async (req, res) => {
 
 router.get("/portfolio", async (req, res) => {
   try {
-    const bankroll = parseFloat(process.env.BANKROLL_USDC ?? "0") || 0;
+    const [configRow] = await db
+      .select({ value: botConfigTable.value })
+      .from(botConfigTable)
+      .where(eq(botConfigTable.key, "bankroll_usdc"))
+      .limit(1);
+    const bankroll = configRow
+      ? parseFloat(configRow.value) || 0
+      : parseFloat(process.env.BANKROLL_USDC ?? "0") || 0;
 
     const [riskRow] = await db
       .select({ total: sql<string>`COALESCE(SUM(${ordersTable.sizeUsdc}::numeric), 0)` })

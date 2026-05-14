@@ -71,13 +71,15 @@ def _size_from_signal(signal: dict, side: str) -> Decimal:
     Extract Kelly-sized USDC amount from signal metadata.
     Falls back to MIN_ORDER_USDC if metadata is absent or invalid.
     """
-    from config import BANKROLL_USDC, MAX_POSITION_PCT
+    import db as _db
+    from config import MAX_POSITION_PCT
+    bankroll = _db.get_bankroll()
     metadata = signal.get("metadata") or {}
     kelly_fraction = metadata.get("kelly_fraction")
 
     if kelly_fraction and float(kelly_fraction) > 0:
-        raw = Decimal(str(BANKROLL_USDC)) * Decimal(str(kelly_fraction))
-        cap = Decimal(str(BANKROLL_USDC)) * Decimal(str(MAX_POSITION_PCT))
+        raw = Decimal(str(bankroll)) * Decimal(str(kelly_fraction))
+        cap = Decimal(str(bankroll)) * Decimal(str(MAX_POSITION_PCT))
         size = min(raw, cap).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
     else:
         size = _MIN_ORDER_USDC
