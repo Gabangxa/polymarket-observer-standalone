@@ -61,9 +61,13 @@ def _analyse_event(event_slug, snapshots):
         arb_type  = "maker"
         total     = sum_mids
         overround = total - 1.0
-        ev_side   = "NO (all outcomes, maker)"
+        ev_side   = "YES SELL (all outcomes, maker)"
         threshold = NEG_RISK_MAKER_THRESHOLD
-        trigger_note = f"Sum of YES mids = {total:.4f} > {threshold} — sell NO on all outcomes."
+        trigger_note = (
+            f"Sum of YES mids = {total:.4f} > {threshold} — "
+            "sell YES on all outcomes. Collect sum(YES_mids) > $1; "
+            "owe exactly $1 at resolution. Profit locked at fill."
+        )
 
     fair_p = 1.0 / n
     ev_per_outcome = [

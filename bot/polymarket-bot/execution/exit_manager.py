@@ -75,6 +75,13 @@ def _should_exit(entry: _PositionEntry, current_price: float) -> bool:
         target = entry.avg_cost + SPREAD_TP_PIPS
         return current_price >= target
 
+    # neg_risk_overround: profit is locked at fill time (taker — bought all YES,
+    # maker — sold all YES). The position is already hedged across all legs.
+    # Exiting a single leg mid-stream creates directional exposure on the others.
+    # Hold all neg_risk legs to resolution; hindsight_logger books the outcome.
+    if entry.strategy == "neg_risk_overround":
+        return False
+
     return False
 
 
