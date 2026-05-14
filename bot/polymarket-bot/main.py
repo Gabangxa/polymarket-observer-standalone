@@ -1,5 +1,5 @@
 # main.py — run the full pipeline once
-# Order: schema init → scanner → collector → [spread, neg_risk, tail_yield] → outcome_tracker
+# Order: schema init → scanner → collector → pnl_tracker → [spread, neg_risk, tail_yield] → outcome_tracker
 
 import glob
 import json
@@ -37,6 +37,7 @@ from agents import market_scanner, data_collector
 from agents import spread_engine, neg_risk_engine, outcome_tracker
 from agents import hindsight_logger
 from agents import tail_yield_engine
+from agents import pnl_tracker
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -159,6 +160,14 @@ def run_pipeline(skip_scan=False):
     except Exception as e:
         logger.error(f"data_collector crashed: {e}", exc_info=True)
         results["agents"]["data_collector"] = {"error": str(e)}
+
+    try:
+        result = pnl_tracker.run()
+        results["agents"]["pnl_tracker"] = result
+        logger.info(f"PnL tracker: {result}")
+    except Exception as e:
+        logger.error(f"pnl_tracker crashed: {e}", exc_info=True)
+        results["agents"]["pnl_tracker"] = {"error": str(e)}
 
     for name, agent in [
         ("spread_engine",     spread_engine),

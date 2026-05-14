@@ -138,6 +138,20 @@ def run() -> dict:
             f"resolved={'YES' if resolved_yes else 'NO'} | pnl={pnl:+.4f}"
         )
 
+    # Book realized PnL on positions for every market that resolved.
+    # Realized PnL formula: (exit_price - avg_cost) × net_shares
+    # This is distinct from signal PnL above (which uses signal entry prices).
+    positions_booked = 0
+    for market_id, resolution_price in resolved_markets.items():
+        try:
+            db.book_realized_pnl(market_id, float(resolution_price))
+            positions_booked += 1
+        except Exception as e:
+            logger.warning(f"  Could not book realized PnL for {market_id}: {e}")
+
+    if positions_booked:
+        logger.info(f"Realized PnL booked for {positions_booked} resolved market(s)")
+
     logger.info(f"Hindsight logger done — resolved: {resolved_count}, skipped: {skipped_count}")
     return {
         "agent":    "hindsight_logger",

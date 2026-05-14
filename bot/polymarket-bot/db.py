@@ -1018,6 +1018,66 @@ def get_all_open_positions() -> list[dict]:
             return [dict(r) for r in cur.fetchall()]
 
 
+def get_latest_snapshots_for_markets(market_ids: list[str]) -> list[dict]:
+    """Return the most recent snapshot for each market in the given list.
+    Returns only the fields needed for PnL computation."""
+    if not market_ids:
+        return []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT ON (market_id)
+                    market_id, yes_price, no_price, collected_at
+                FROM snapshots
+                WHERE market_id = ANY(%s)
+                ORDER BY market_id, collected_at DESC
+            """, (market_ids,))
+            return [dict(r) for r in cur.fetchall()]
+
+
+def update_position_pnl_open(
+    market_id: str,
+    token_id: str,
+    side: str,
+    pnl_open: float,
+) -> None:
+    """Overwrite pnl_open for a single position. Called each cycle by pnl_tracker.
+    Does not touch pnl_realized — those are separate ledger entries."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE positions
+                SET pnl_open = %s, last_updated = NOW()
+                WHERE market_id = %s AND token_id = %s AND side = %s
+            """, (pnl_open, market_id, token_id, side))
+
+
+def book_realized_pnl(market_id: str, exit_price: float) -> None:
+    """
+    Called when a market fully resolves. For every open position on that market,
+    locks in the realized gain/loss and zeros out unrealized:
+
+      pnl_realized += (exit_price - avg_cost) * net_shares
+      pnl_open      = 0
+
+    exit_price is 1.0 for YES resolution, 0.0 for NO resolution, or the
+    actual fill price on an active sell order.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE positions
+                SET
+                    pnl_realized = pnl_realized
+                                   + (%s - COALESCE(avg_cost, 0))
+                                     * (COALESCE(total_bought, 0) - COALESCE(total_sold, 0)),
+                    pnl_open     = 0,
+                    last_updated = NOW()
+                WHERE market_id = %s
+                  AND (COALESCE(total_bought, 0) - COALESCE(total_sold, 0)) > 0
+            """, (exit_price, market_id))
+
+
 def get_db_stats() -> dict:
     """Quick stats for the health endpoint and run summary."""
     with get_conn() as conn:
