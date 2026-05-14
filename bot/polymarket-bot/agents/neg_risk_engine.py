@@ -46,15 +46,17 @@ def _analyse_event(event_slug, snapshots):
     n = len(records)
     # Report the more actionable edge; taker arb (instant fill) takes priority
     if is_taker_arb:
-        total    = sum_asks
+        arb_type  = "taker"
+        total     = sum_asks
         overround = 1.0 - total     # profit per share set bought
-        ev_side  = "YES (all outcomes, taker)"
+        ev_side   = "YES (all outcomes, taker)"
         threshold = NEG_RISK_TAKER_THRESHOLD
         trigger_note = f"Sum of YES asks = {total:.4f} < {threshold} — buy all YES for guaranteed profit."
     else:
-        total    = sum_mids
+        arb_type  = "maker"
+        total     = sum_mids
         overround = total - 1.0
-        ev_side  = "NO (all outcomes, maker)"
+        ev_side   = "NO (all outcomes, maker)"
         threshold = NEG_RISK_MAKER_THRESHOLD
         trigger_note = f"Sum of YES mids = {total:.4f} > {threshold} — sell NO on all outcomes."
 
@@ -67,6 +69,7 @@ def _analyse_event(event_slug, snapshots):
 
     return {
         "strategy":     "neg_risk_overround",
+        "arb_type":     arb_type,
         "market_id":    None,
         "event_slug":   event_slug,
         "num_outcomes": n,

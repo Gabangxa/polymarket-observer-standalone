@@ -103,12 +103,24 @@ def _get_token_id(signal: dict, side: str) -> str | None:
 
 def _place_neg_risk_legs(signal: dict, client) -> dict:
     """
-    Place one BUY YES GTD order per outcome leg for a neg_risk_overround signal.
-    The signal is marked executed before the first leg is submitted so retries
-    cannot double-place legs. Returns ok=True only if every leg was submitted.
+    Place one BUY YES GTD order per outcome leg for a neg_risk_overround TAKER signal.
+    MAKER signals (arb_type='maker') are rejected here — SELL NO execution is not yet
+    implemented and executing a MAKER signal as BUY YES produces the wrong trade.
+    Returns ok=True only if every leg was submitted.
     """
     signal_id = signal["id"]
     metadata  = signal.get("metadata") or {}
+
+    arb_type = metadata.get("arb_type", "")
+    if arb_type == "maker":
+        logger.info(
+            f"neg_risk signal {signal_id} is a MAKER arb — "
+            "SELL NO execution not yet implemented, skipping."
+        )
+        if signal_id:
+            db.mark_signal_executed(signal_id)
+        return {"ok": False, "clord_id": None, "error": "maker arb not yet executable"}
+
     outcomes  = metadata.get("outcomes") or []
 
     if not outcomes:
