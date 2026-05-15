@@ -5,22 +5,29 @@ import {
   AlertTriangle,
   Ban,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Clock,
   DollarSign,
+  KeyRound,
   Loader2,
   Pencil,
+  Send,
   TrendingUp,
   Wallet,
   XCircle,
   Zap,
 } from "lucide-react";
+import { setApiKey } from "@workspace/api-client-react";
 import {
+  useLiveMarkets,
   useLiveOrders,
   useLivePositions,
   useLivePortfolio,
   useCancelOrder,
   useCancelAllOrders,
   useSetBankroll,
+  useSubmitSignal,
 } from "@/hooks/use-polymarket";
 import { TableSkeleton, Badge } from "@/components/ui-elements";
 import {
@@ -679,6 +686,237 @@ function PositionsBlotter() {
   );
 }
 
+// ── API Key settings ───────────────────────────────────────────────────────────
+
+function ApiKeySettings() {
+  const [key, setKey] = useState(() => localStorage.getItem("x-api-key") ?? "");
+  const [saved, setSaved] = useState(false);
+
+  function save() {
+    const trimmed = key.trim();
+    localStorage.setItem("x-api-key", trimmed);
+    setApiKey(trimmed || null);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  }
+
+  return (
+    <div className="flex items-center gap-3 flex-wrap">
+      <KeyRound className="w-4 h-4 shrink-0" style={{ color: "var(--color-text-tertiary)" }} />
+      <span className="text-xs font-mono" style={{ color: "var(--color-text-tertiary)" }}>API Key</span>
+      <input
+        type="password"
+        value={key}
+        onChange={(e) => setKey(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && save()}
+        placeholder="INTERNAL_API_KEY"
+        className="flex-1 min-w-48 text-xs font-mono px-3 py-1.5 rounded-sm bg-transparent border outline-none"
+        style={{
+          borderColor: "var(--color-app-border)",
+          color: "var(--color-text-primary)",
+        }}
+      />
+      <button
+        onClick={save}
+        className="text-xs font-mono px-3 py-1.5 rounded-sm transition-colors"
+        style={{
+          color: saved ? "var(--color-accent-success)" : "var(--color-accent-primary)",
+          background: "color-mix(in srgb, var(--color-accent-primary) 10%, transparent)",
+          border: "1px solid color-mix(in srgb, var(--color-accent-primary) 25%, transparent)",
+        }}
+      >
+        {saved ? "Saved" : "Save"}
+      </button>
+    </div>
+  );
+}
+
+// ── Manual signal form ─────────────────────────────────────────────────────────
+
+const STRATEGIES = ["spread_engine", "tail_yield_engine", "neg_risk_overround"] as const;
+
+function ManualSignalPanel() {
+  const [open, setOpen] = useState(false);
+  const { data: marketsData } = useLiveMarkets();
+  const submitSignal = useSubmitSignal();
+
+  const [search, setSearch] = useState("");
+  const [marketId, setMarketId] = useState("");
+  const [strategy, setStrategy] = useState<string>(STRATEGIES[0]);
+  const [score, setScore] = useState("0.85");
+  const [kelly, setKelly] = useState("0.01");
+  const [success, setSuccess] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const markets = (marketsData?.markets ?? []).filter((m) =>
+    !search || m.question?.toLowerCase().includes(search.toLowerCase()),
+  );
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setSuccess(null);
+    submitSignal.mutate(
+      {
+        strategy,
+        marketId,
+        signalScore: score,
+        metadata: { kelly_fraction: parseFloat(kelly), source: "manual" },
+      },
+      {
+        onSuccess: (data) => { setSuccess(data.id); setMarketId(""); setSearch(""); },
+        onError: (err) => setError((err as Error).message),
+      },
+    );
+  }
+
+  const inputStyle = {
+    background: "var(--color-app-surface-hover)",
+    border: "1px solid var(--color-app-border)",
+    color: "var(--color-text-primary)",
+  };
+
+  return (
+    <div className="terminal-panel overflow-hidden" style={{ padding: 0 }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-5 py-3.5 text-sm font-mono transition-colors"
+        style={{ color: "var(--color-text-secondary)", borderBottom: open ? "1px solid var(--color-app-border)" : "none" }}
+      >
+        <span className="flex items-center gap-2">
+          <Send className="w-4 h-4" style={{ color: "var(--color-accent-primary)" }} />
+          Manual Execution
+        </span>
+        {open ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+      </button>
+
+      {open && (
+        <form onSubmit={handleSubmit} className="p-5 space-y-4">
+          {/* Market search + select */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-mono" style={{ color: "var(--color-text-tertiary)" }}>
+              Market
+            </label>
+            <input
+              type="text"
+              placeholder="Search markets…"
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setMarketId(""); }}
+              className="w-full text-sm font-mono px-3 py-2 rounded-sm outline-none"
+              style={inputStyle}
+            />
+            {search && markets.length > 0 && !marketId && (
+              <div
+                className="rounded-sm border max-h-48 overflow-y-auto"
+                style={{ background: "var(--color-app-surface)", borderColor: "var(--color-app-border)" }}
+              >
+                {markets.slice(0, 12).map((m) => (
+                  <button
+                    key={m.marketId}
+                    type="button"
+                    onClick={() => { setMarketId(m.marketId); setSearch(m.question ?? m.marketId); }}
+                    className="w-full text-left px-3 py-2 text-xs font-mono transition-colors hover:bg-[var(--color-app-surface-hover)]"
+                    style={{ color: "var(--color-text-primary)", borderBottom: "1px solid var(--color-app-border)" }}
+                  >
+                    <div className="truncate">{m.question ?? m.marketId}</div>
+                    <div className="text-[10px] mt-0.5" style={{ color: "var(--color-text-tertiary)" }}>{m.marketId.slice(0, 24)}…</div>
+                  </button>
+                ))}
+              </div>
+            )}
+            {marketId && (
+              <div className="text-[10px] font-mono" style={{ color: "var(--color-accent-primary)" }}>
+                Selected: {marketId.slice(0, 32)}…
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {/* Strategy */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-mono" style={{ color: "var(--color-text-tertiary)" }}>Strategy</label>
+              <select
+                value={strategy}
+                onChange={(e) => setStrategy(e.target.value)}
+                className="w-full text-sm font-mono px-3 py-2 rounded-sm outline-none"
+                style={inputStyle}
+              >
+                {STRATEGIES.map((s) => (
+                  <option key={s} value={s}>{s.replace(/_/g, " ")}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Signal score */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-mono" style={{ color: "var(--color-text-tertiary)" }}>
+                Signal Score <span style={{ color: "var(--color-text-tertiary)" }}>(min 0.75)</span>
+              </label>
+              <input
+                type="number"
+                min="0.75"
+                max="1"
+                step="0.01"
+                value={score}
+                onChange={(e) => setScore(e.target.value)}
+                className="w-full text-sm font-mono px-3 py-2 rounded-sm outline-none"
+                style={inputStyle}
+              />
+            </div>
+
+            {/* Kelly fraction */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-mono" style={{ color: "var(--color-text-tertiary)" }}>
+                Kelly Fraction <span style={{ color: "var(--color-text-tertiary)" }}>(e.g. 0.01 = 1%)</span>
+              </label>
+              <input
+                type="number"
+                min="0.001"
+                max="0.25"
+                step="0.001"
+                value={kelly}
+                onChange={(e) => setKelly(e.target.value)}
+                className="w-full text-sm font-mono px-3 py-2 rounded-sm outline-none"
+                style={inputStyle}
+              />
+            </div>
+          </div>
+
+          {/* Feedback */}
+          {error && (
+            <div className="text-xs font-mono px-3 py-2 rounded-sm" style={{ color: "var(--color-accent-danger)", background: "color-mix(in srgb, var(--color-accent-danger) 10%, transparent)" }}>
+              {error}
+            </div>
+          )}
+          {success !== null && (
+            <div className="text-xs font-mono px-3 py-2 rounded-sm" style={{ color: "var(--color-accent-success)", background: "color-mix(in srgb, var(--color-accent-success) 10%, transparent)" }}>
+              Signal submitted — id {success === -1 ? "(deduped, already exists this hour)" : `#${success}`}. Executor picks it up within 10s.
+            </div>
+          )}
+
+          <div className="flex justify-end">
+            <button
+              type="submit"
+              disabled={!marketId || submitSignal.isPending}
+              className="flex items-center gap-2 px-5 py-2 text-sm font-mono rounded-sm transition-colors"
+              style={{
+                color: "var(--color-accent-primary)",
+                background: "color-mix(in srgb, var(--color-accent-primary) 15%, transparent)",
+                border: "1px solid color-mix(in srgb, var(--color-accent-primary) 30%, transparent)",
+                opacity: (!marketId || submitSignal.isPending) ? 0.5 : 1,
+                cursor: (!marketId || submitSignal.isPending) ? "not-allowed" : "pointer",
+              }}
+            >
+              {submitSignal.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+              Submit Signal
+            </button>
+          </div>
+        </form>
+      )}
+    </div>
+  );
+}
+
 // ── Page ───────────────────────────────────────────────────────────────────────
 
 type BlotterTab = "active" | "closed" | "positions";
@@ -736,6 +974,13 @@ export default function Execution() {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
+      {/* ── Settings row ── */}
+      <div className="terminal-panel px-5 py-3">
+        <ApiKeySettings />
+      </div>
+
+      <ManualSignalPanel />
+
       <ConfirmDialog
         open={showCancelAll}
         title="Cancel ALL active orders?"

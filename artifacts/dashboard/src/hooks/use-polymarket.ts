@@ -125,6 +125,30 @@ export function useLivePortfolio() {
   });
 }
 
+export interface SubmitSignalPayload {
+  strategy: string;
+  marketId: string;
+  signalScore: string;
+  metadata: Record<string, unknown>;
+}
+
+export function useSubmitSignal() {
+  return useMutation({
+    mutationFn: async (payload: SubmitSignalPayload) => {
+      const res = await fetch("/api/signals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as { error?: string }).error ?? `HTTP ${res.status}`);
+      }
+      return res.json() as Promise<{ id: number }>;
+    },
+  });
+}
+
 export function useSetBankroll() {
   const qc = useQueryClient();
   return useMutation({

@@ -17,6 +17,7 @@ const DEFAULT_JSON_ACCEPT = "application/json, application/problem+json";
 
 let _baseUrl: string | null = null;
 let _authTokenGetter: AuthTokenGetter | null = null;
+let _apiKey: string | null = null;
 
 /**
  * Set a base URL that is prepended to every relative request URL
@@ -39,6 +40,10 @@ export function setBaseUrl(url: string | null): void {
  */
 export function setAuthTokenGetter(getter: AuthTokenGetter | null): void {
   _authTokenGetter = getter;
+}
+
+export function setApiKey(key: string | null): void {
+  _apiKey = key || null;
 }
 
 function isRequest(input: RequestInfo | URL): input is Request {
@@ -353,6 +358,10 @@ export async function customFetch<T = unknown>(
     if (token) {
       headers.set("authorization", `Bearer ${token}`);
     }
+  }
+
+  if (_apiKey && !headers.has("x-api-key")) {
+    headers.set("x-api-key", _apiKey);
   }
 
   const requestInfo = { method, url: resolveUrl(input) };
