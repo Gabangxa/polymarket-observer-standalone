@@ -11,6 +11,7 @@ import {
   getGetPortfolioQueryOptions,
   useCancelOrder,
   useCancelAllOrders,
+  customFetch,
 } from "@workspace/api-client-react";
 import type {
   ListSnapshotsParams,
@@ -134,18 +135,12 @@ export interface SubmitSignalPayload {
 
 export function useSubmitSignal() {
   return useMutation({
-    mutationFn: async (payload: SubmitSignalPayload) => {
-      const res = await fetch("/api/signals", {
+    mutationFn: (payload: SubmitSignalPayload) =>
+      customFetch<{ id: number }>("/api/signals", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error((err as { error?: string }).error ?? `HTTP ${res.status}`);
-      }
-      return res.json() as Promise<{ id: number }>;
-    },
+      }),
   });
 }
 
