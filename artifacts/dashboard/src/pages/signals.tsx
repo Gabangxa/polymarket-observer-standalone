@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import { Filter, Zap } from "lucide-react";
 import { useLiveSignals } from "@/hooks/use-polymarket";
 import { TableSkeleton, Badge } from "@/components/ui-elements";
-import { formatRelativeTime, getStrategyColor, parseNumeric, formatPrice } from "@/lib/utils";
+import { getStrategyColor, parseNumeric, formatPrice } from "@/lib/utils";
 import { Link } from "wouter";
 
 export default function Signals() {
@@ -87,8 +87,13 @@ export default function Signals() {
               ) : (
                 data.signals.map((signal) => (
                   <tr key={signal.id} className="data-row">
-                    <td className="px-4 py-4 font-mono text-muted-foreground text-xs" title={signal.emittedAt || ""}>
-                      {formatRelativeTime(signal.emittedAt)}
+                    <td className="px-4 py-4 font-mono text-muted-foreground text-xs whitespace-nowrap" title={signal.emittedAt || ""}>
+                      {signal.emittedAt
+                        ? new Date(signal.emittedAt).toLocaleString(undefined, {
+                            month: "short", day: "numeric",
+                            hour: "2-digit", minute: "2-digit", second: "2-digit",
+                          })
+                        : "—"}
                     </td>
                     <td className="px-4 py-4">
                       <Badge className={getStrategyColor(signal.strategy)}>
