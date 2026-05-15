@@ -7,6 +7,8 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  CirclePause,
+  CirclePlay,
   Clock,
   DollarSign,
   KeyRound,
@@ -28,6 +30,9 @@ import {
   useCancelAllOrders,
   useSetBankroll,
   useSubmitSignal,
+  useExecutorStatus,
+  usePauseExecutor,
+  useResumeExecutor,
 } from "@/hooks/use-polymarket";
 import { TableSkeleton, Badge } from "@/components/ui-elements";
 import {
@@ -917,6 +922,81 @@ function ManualSignalPanel() {
   );
 }
 
+// ── Executor toggle ────────────────────────────────────────────────────────────
+
+function ExecutorToggle() {
+  const { data: status } = useExecutorStatus();
+  const pause = usePauseExecutor();
+  const resume = useResumeExecutor();
+  const [confirmPause, setConfirmPause] = useState(false);
+
+  const paused = status?.paused ?? null;
+  const loading = pause.isPending || resume.isPending;
+
+  if (paused === null) return null;
+
+  return (
+    <>
+      <ConfirmDialog
+        open={confirmPause}
+        title="Pause the executor?"
+        body="Signal processing will halt. Fill polling and order tracking continue. Resume at any time from this page."
+        confirmLabel="Pause Executor"
+        danger
+        loading={pause.isPending}
+        onConfirm={() => {
+          pause.mutate(undefined, { onSettled: () => setConfirmPause(false) });
+        }}
+        onCancel={() => setConfirmPause(false)}
+      />
+
+      <div className="flex items-center gap-2">
+        <span
+          className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-sm border ${
+            paused
+              ? "text-amber-400 bg-amber-400/10 border-amber-400/30 animate-pulse"
+              : "text-emerald-400 bg-emerald-400/10 border-emerald-400/30"
+          }`}
+        >
+          {paused ? "PAUSED" : "RUNNING"}
+        </span>
+
+        <button
+          disabled={loading}
+          onClick={() => {
+            if (paused) {
+              resume.mutate();
+            } else {
+              setConfirmPause(true);
+            }
+          }}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono rounded-sm transition-colors"
+          style={{
+            color: paused ? "var(--color-accent-success)" : "var(--color-accent-warning, #f59e0b)",
+            background: paused
+              ? "color-mix(in srgb, var(--color-accent-success) 10%, transparent)"
+              : "color-mix(in srgb, #f59e0b 10%, transparent)",
+            border: paused
+              ? "1px solid color-mix(in srgb, var(--color-accent-success) 30%, transparent)"
+              : "1px solid color-mix(in srgb, #f59e0b 30%, transparent)",
+            opacity: loading ? 0.5 : 1,
+            cursor: loading ? "not-allowed" : "pointer",
+          }}
+        >
+          {loading ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : paused ? (
+            <CirclePlay className="w-3.5 h-3.5" />
+          ) : (
+            <CirclePause className="w-3.5 h-3.5" />
+          )}
+          {paused ? "Resume" : "Pause"} Executor
+        </button>
+      </div>
+    </>
+  );
+}
+
 // ── Page ───────────────────────────────────────────────────────────────────────
 
 type BlotterTab = "active" | "closed" | "positions";
@@ -1010,7 +1090,10 @@ export default function Execution() {
           </p>
         </div>
 
-        <button
+        <div className="flex items-center gap-2 flex-wrap">
+          <ExecutorToggle />
+
+          <button
           onClick={() => setShowCancelAll(true)}
           disabled={activeCount === 0}
           className="flex items-center gap-2 px-4 py-2 text-sm font-mono rounded-sm transition-colors"
@@ -1041,6 +1124,7 @@ export default function Execution() {
             </span>
           )}
         </button>
+        </div>
       </div>
 
       {/* ── Stats row ── */}

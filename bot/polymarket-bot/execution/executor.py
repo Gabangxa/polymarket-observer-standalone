@@ -227,6 +227,18 @@ def run_executor() -> None:
                 client = get_client()
                 logger.info("Executor: CLOB client ready")
 
+            # Sync pause flag from DB so UI toggle takes effect within one cycle
+            try:
+                paused_in_db = db.get_config("executor_paused", "false") == "true"
+                if paused_in_db and not _PAUSE_FLAG.is_set():
+                    _PAUSE_FLAG.set()
+                    logger.warning("Executor PAUSED via DB config")
+                elif not paused_in_db and _PAUSE_FLAG.is_set():
+                    _PAUSE_FLAG.clear()
+                    logger.info("Executor RESUMED via DB config")
+            except Exception as _e:
+                logger.debug(f"Could not sync pause flag from DB: {_e}")
+
             if _PAUSE_FLAG.is_set():
                 logger.debug("Executor paused — skipping signal processing")
             else:

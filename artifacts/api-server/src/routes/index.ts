@@ -6,6 +6,7 @@ import signalsRouter from "./signals";
 import strategiesRouter from "./strategies";
 import ordersRouter from "./orders";
 import configRouter from "./config";
+import executionRouter from "./execution";
 
 const router: IRouter = Router();
 
@@ -16,5 +17,6 @@ router.use(signalsRouter);
 router.use(strategiesRouter);
 router.use(ordersRouter);
 router.use(configRouter);
+router.use(executionRouter);
 
 export default router;

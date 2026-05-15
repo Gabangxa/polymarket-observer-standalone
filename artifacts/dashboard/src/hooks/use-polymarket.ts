@@ -167,6 +167,46 @@ export function useSetBankroll() {
   });
 }
 
+export function useExecutorStatus() {
+  return useQuery<{ paused: boolean }>({
+    queryKey: ["execution", "status"],
+    queryFn: async () => {
+      const res = await fetch("/api/execution/status");
+      if (!res.ok) throw new Error("Failed to fetch executor status");
+      return res.json();
+    },
+    refetchInterval: POLLING_INTERVAL,
+  });
+}
+
+export function usePauseExecutor() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/execution/pause", { method: "POST" });
+      if (!res.ok) throw new Error("Failed to pause executor");
+      return res.json() as Promise<{ paused: boolean }>;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["execution", "status"] });
+    },
+  });
+}
+
+export function useResumeExecutor() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/execution/resume", { method: "POST" });
+      if (!res.ok) throw new Error("Failed to resume executor");
+      return res.json() as Promise<{ paused: boolean }>;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["execution", "status"] });
+    },
+  });
+}
+
 export function useMarketSignals(marketId: string) {
   return useQuery({
     queryKey: ["signals", "market", marketId],
