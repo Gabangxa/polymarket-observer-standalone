@@ -48,10 +48,9 @@ def main():
     logger.info(f"Bankroll USDC    : {BANKROLL_USDC if BANKROLL_USDC > 0 else '(not set — orders blocked)'}")
     logger.info("=" * 60)
 
-    # Start HTTP keep-alive server in background thread.
-    # Uses BOT_PORT (default 5001) so it never conflicts with the
-    # Express API server which owns the PORT variable (8080).
-    port = int(os.environ.get("BOT_PORT", 5001))
+    # On Railway each service gets its own PORT — bind to it so health checks
+    # and the public URL work. BOT_PORT is a local/Replit fallback only.
+    port = int(os.environ.get("PORT", os.environ.get("BOT_PORT", 8080)))
     start_server(host="0.0.0.0", port=port)
 
     # Start execution layer — polls signals table and places CLOB orders.
