@@ -256,7 +256,28 @@ def init_schema() -> None:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
+    # Run additive migrations in separate transactions so an index failure
+    # cannot roll back the column additions above.
+    _run_migrations()
     logger.info("Database schema ready")
+
+
+_MIGRATIONS = [
+    "ALTER TABLE signals ADD COLUMN IF NOT EXISTS executed BOOLEAN DEFAULT FALSE",
+    "ALTER TABLE signals ADD COLUMN IF NOT EXISTS outcome BOOLEAN",
+    "ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS yes_ask NUMERIC",
+    "ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS no_ask NUMERIC",
+]
+
+
+def _run_migrations() -> None:
+    for stmt in _MIGRATIONS:
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(stmt)
+        except Exception as e:
+            logger.warning(f"Migration skipped ({stmt[:60]}...): {e}")
 
 
 # ── markets table ─────────────────────────────────────────────────────────────
