@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { useOrderToasts } from "@/hooks/use-order-toasts";
 import { motion } from "framer-motion";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -1274,6 +1275,7 @@ function ExecutorToggle() {
 type BlotterTab = "active" | "closed" | "positions" | "analytics";
 
 export default function Execution() {
+  useOrderToasts();
   const [tab, setTab] = useState<BlotterTab>("active");
   const [showCancelAll, setShowCancelAll] = useState(false);
   const qc = useQueryClient();

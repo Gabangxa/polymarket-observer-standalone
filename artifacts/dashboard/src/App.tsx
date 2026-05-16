@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { TimezoneProvider } from "@/hooks/use-timezone";
+import { AlertSettingsProvider } from "@/hooks/use-alert-settings";
 import NotFound from "@/pages/not-found";
 
 class ErrorBoundary extends Component<
@@ -76,16 +77,18 @@ function Router() {
 function App() {
   return (
     <TimezoneProvider>
-      <QueryClientProvider client={queryClient}>
-        <TooltipProvider>
-          <ErrorBoundary>
-            <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-              <Router />
-            </WouterRouter>
-          </ErrorBoundary>
-          <Toaster />
-        </TooltipProvider>
-      </QueryClientProvider>
+      <AlertSettingsProvider>
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <ErrorBoundary>
+              <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
+                <Router />
+              </WouterRouter>
+            </ErrorBoundary>
+            <Toaster />
+          </TooltipProvider>
+        </QueryClientProvider>
+      </AlertSettingsProvider>
     </TimezoneProvider>
   );
 }

@@ -14,10 +14,20 @@ import {
   Settings,
   Globe,
   Zap,
+  Bell,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useLiveHealth } from "@/hooks/use-polymarket";
 import { useTimezone, TIMEZONES } from "@/hooks/use-timezone";
+import { useAlertSettings } from "@/hooks/use-alert-settings";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 
 const NAV_ITEMS = [
   { href: "/",             label: "Overview",    icon: LayoutDashboard },
@@ -34,6 +44,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const { data: health, isError } = useLiveHealth();
   const [isDark, setIsDark] = useState(true);
   const { timezone, setTimezone } = useTimezone();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const { settings, set } = useAlertSettings();
 
   useEffect(() => {
     if (isDark) {
@@ -223,12 +235,109 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </button>
 
           <button
+            onClick={() => setSettingsOpen(true)}
             className="flex items-center justify-center lg:justify-start px-3 py-2.5 rounded-sm transition-colors cursor-pointer hover:bg-[var(--color-app-surface-hover)]"
             style={{ color: "var(--color-text-tertiary)" }}
           >
             <Settings className="w-5 h-5" />
             <span className="hidden lg:block ml-3 text-sm font-medium">Settings</span>
           </button>
+
+          <Sheet open={settingsOpen} onOpenChange={setSettingsOpen}>
+            <SheetContent
+              side="left"
+              className="w-80"
+              style={{
+                background: "var(--color-app-surface)",
+                borderRight: "1px solid var(--color-app-border)",
+                color: "var(--color-text-primary)",
+              }}
+            >
+              <SheetHeader className="mb-6">
+                <SheetTitle style={{ color: "var(--color-text-primary)" }}>
+                  Settings
+                </SheetTitle>
+              </SheetHeader>
+
+              {/* ── Alerts section ───────────────────────────── */}
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <Bell className="w-4 h-4" style={{ color: "var(--color-accent-primary)" }} />
+                  <span className="text-sm font-semibold tracking-wide uppercase"
+                    style={{ color: "var(--color-text-secondary)", letterSpacing: "0.08em" }}>
+                    Alerts
+                  </span>
+                </div>
+
+                <p className="text-xs mb-4" style={{ color: "var(--color-text-tertiary)" }}>
+                  Choose which execution events trigger a toast notification.
+                </p>
+
+                <div className="space-y-5">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <Label htmlFor="alert-failed" className="text-sm font-medium cursor-pointer"
+                        style={{ color: "var(--color-text-primary)" }}>
+                        Execution failed
+                      </Label>
+                      <p className="text-xs mt-0.5" style={{ color: "var(--color-text-tertiary)" }}>
+                        Order rejected or errored on the exchange
+                      </p>
+                    </div>
+                    <Switch
+                      id="alert-failed"
+                      checked={settings.onExecFailed}
+                      onCheckedChange={(v) => set("onExecFailed", v)}
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <Label htmlFor="alert-opened" className="text-sm font-medium cursor-pointer"
+                        style={{ color: "var(--color-text-primary)" }}>
+                        Order opened
+                      </Label>
+                      <p className="text-xs mt-0.5" style={{ color: "var(--color-text-tertiary)" }}>
+                        Order successfully submitted to the CLOB
+                      </p>
+                    </div>
+                    <Switch
+                      id="alert-opened"
+                      checked={settings.onExecOpened}
+                      onCheckedChange={(v) => set("onExecOpened", v)}
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <Label htmlFor="alert-closed" className="text-sm font-medium cursor-pointer"
+                        style={{ color: "var(--color-text-primary)" }}>
+                        Order filled
+                      </Label>
+                      <p className="text-xs mt-0.5" style={{ color: "var(--color-text-tertiary)" }}>
+                        Order fully filled on the exchange
+                      </p>
+                    </div>
+                    <Switch
+                      id="alert-closed"
+                      checked={settings.onExecClosed}
+                      onCheckedChange={(v) => set("onExecClosed", v)}
+                    />
+                  </div>
+                </div>
+
+                <div
+                  className="mt-6 pt-4 text-xs font-mono"
+                  style={{
+                    borderTop: "1px solid var(--color-app-border)",
+                    color: "var(--color-text-tertiary)",
+                  }}
+                >
+                  Preferences saved to local storage.
+                </div>
+              </div>
+            </SheetContent>
+          </Sheet>
         </div>
       </aside>
 
