@@ -21,9 +21,29 @@ _BACKOFF_BASE   = 1.0
 _BACKOFF_CAP    = 30.0
 _GTD_BUFFER_SECS = 60   # Polymarket enforces: expiration must be > now + 60s
 
-# Minimum order the CLOB will accept (in USDC). Orders sized below this are
-# rejected rather than bumped up — bumping would silently violate the position cap.
-_MIN_ORDER_USDC = Decimal("1.0")
+# Minimum economic order size (in USDC). Orders sized below this are skipped
+# rather than bumped up — bumping would silently violate the position cap.
+# Floor raised above the CLOB's $1 hard minimum because sub-$5 trades cannot
+# recover round-trip costs (Polygon gas + spread + slippage) and only pollute
+# the calibration log with tick-rounding wins/losses.
+_MIN_ORDER_USDC = Decimal("5.0")
+
+# Tick size cache: token_id → Decimal tick size.
+# Polymarket markets use either 0.01 or 0.001; wrong precision → "Invalid order inputs".
+_TICK_CACHE: dict[str, Decimal] = {}
+_TICK_DEFAULT = Decimal("0.01")
+
+
+def _tick_dec(client, token_id: str) -> Decimal:
+    if token_id in _TICK_CACHE:
+        return _TICK_CACHE[token_id]
+    try:
+        ts = Decimal(str(client.get_tick_size(token_id)))
+        _TICK_CACHE[token_id] = ts
+        return ts
+    except Exception as e:
+        logger.debug(f"tick size lookup failed for {token_id}: {e} — defaulting to {_TICK_DEFAULT}")
+        return _TICK_DEFAULT
 
 
 def _gtd_expiration(strategy: str) -> int:
@@ -46,16 +66,60 @@ def _make_clord_id(strategy: str, signal_id: int) -> str:
     return f"{strategy[:8]}_{signal_id}_{ts}_{nonce}"
 
 
+# Substrings (case-insensitive) on CLOB error messages that indicate a validation
+# failure rather than a transient outage. Retrying these wastes backoff time and
+# starves later signals (causing the stale-signal cascade observed in production).
+_NON_RETRYABLE_ERROR_PATTERNS = (
+    "invalid order",        # "Invalid order inputs"
+    "invalid price",
+    "invalid size",
+    "tick size",
+    "min size",
+    "minimum size",
+    "min_order_size",
+    "insufficient",         # insufficient balance / allowance
+    "not enough balance",
+    "not allowed",
+    "unauthorized",
+    "forbidden",
+    "bad request",
+    "signature",            # malformed signed order
+    "nonce",
+    "already exists",
+    "duplicate",
+    "expired",              # GTD expiration in the past
+)
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """
+    Return True if this error looks transient (timeout, 5xx, connection),
+    False if it's a validation/business-logic rejection that won't recover with retry.
+    """
+    msg = str(exc).lower()
+    for pattern in _NON_RETRYABLE_ERROR_PATTERNS:
+        if pattern in msg:
+            return False
+    return True
+
+
 def _backoff_retry(fn, max_retries: int = ORDER_MAX_RETRIES):
     """
     Call fn() with exponential backoff on exception.
     Returns the result on success. Raises the last exception after all retries.
+    Validation errors (tick size, invalid inputs, insufficient balance, …) are
+    raised immediately without retry — these don't recover with time.
     """
     delay = _BACKOFF_BASE
     for attempt in range(1, max_retries + 1):
         try:
             return fn()
         except Exception as e:
+            if not _is_retryable(e):
+                logger.warning(
+                    f"API call rejected (no retry — validation error): {e}"
+                )
+                raise
             if attempt == max_retries:
                 raise
             wait = min(delay, _BACKOFF_CAP)
@@ -165,7 +229,7 @@ def _place_neg_risk_legs(signal: dict, client) -> dict:
             continue
 
         token_id    = token_ids[0]
-        price       = Decimal(str(yes_ask)).quantize(Decimal("0.001"), rounding=ROUND_DOWN)
+        price       = Decimal(str(yes_ask)).quantize(_tick_dec(client, token_id), rounding=ROUND_DOWN)
         size_usdc   = _MIN_ORDER_USDC
         size_shares = (size_usdc / price).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
         expiration  = _gtd_expiration("neg_risk_overround")
@@ -283,7 +347,7 @@ def _place_neg_risk_maker_legs(signal: dict, client) -> dict:
             logger.warning(f"Maker leg skipped — no yes_price | market={market_id}")
             continue
 
-        price = Decimal(str(yes_price)).quantize(Decimal("0.001"), rounding=ROUND_DOWN)
+        price = Decimal(str(yes_price)).quantize(_tick_dec(client, yes_token_id), rounding=ROUND_DOWN)
         if price <= 0:
             logger.warning(f"Maker leg skipped — price rounded to zero (raw={yes_price}) | market={market_id}")
             continue
@@ -392,17 +456,29 @@ def place_order(signal: dict, client, reprice_of: int = None) -> dict:
     clord_id = _make_clord_id(strategy, signal_id)
 
     # Determine price by strategy (both use GTD LIMIT BUY)
+    tick = _tick_dec(client, token_id)
     if strategy == "spread_engine":
-        raw_price = metadata.get("yes_price")
-        if raw_price is None:
-            return {"ok": False, "clord_id": clord_id, "error": "missing yes_price in metadata"}
-        price = Decimal(str(raw_price)).quantize(Decimal("0.001"), rounding=ROUND_DOWN)
+        # Post passive maker BUY at one tick below the current ask. This joins
+        # the top of the book ahead of any existing bid below the ask, improving
+        # fill probability vs. posting at midpoint (which rarely fills).
+        # Fall back to midpoint if yes_ask is unavailable.
+        raw_ask = metadata.get("yes_ask")
+        if raw_ask is not None and float(raw_ask) > 0:
+            ask_q = Decimal(str(raw_ask)).quantize(tick, rounding=ROUND_DOWN)
+            price = ask_q - tick
+            if price <= 0:
+                return {"ok": False, "clord_id": clord_id, "error": f"ask-minus-tick non-positive (ask={raw_ask}, tick={tick})"}
+        else:
+            raw_price = metadata.get("yes_price")
+            if raw_price is None:
+                return {"ok": False, "clord_id": clord_id, "error": "missing yes_ask and yes_price in metadata"}
+            price = Decimal(str(raw_price)).quantize(tick, rounding=ROUND_DOWN)
 
     elif strategy == "tail_yield_engine":
         raw_price = metadata.get("yes_price")
         if raw_price is None:
             return {"ok": False, "clord_id": clord_id, "error": "missing yes_price in metadata"}
-        price = Decimal(str(raw_price)).quantize(Decimal("0.001"), rounding=ROUND_DOWN)
+        price = Decimal(str(raw_price)).quantize(tick, rounding=ROUND_DOWN)
 
     else:
         return {"ok": False, "clord_id": clord_id, "error": f"no order logic for strategy '{strategy}'"}
@@ -442,8 +518,6 @@ def place_order(signal: dict, client, reprice_of: int = None) -> dict:
         return {"ok": False, "clord_id": clord_id, "error": f"db error: {e}"}
 
     # Submit to CLOB with GTD and backoff
-    # Note: tick_size is market-specific (0.01 or 0.001). Defaulting to 0.001.
-    # If the CLOB rejects with a tick size error, fetch via client.get_tick_size(token_id).
     try:
         from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
         order_args = OrderArgs(
@@ -662,7 +736,7 @@ def place_exit_order(position: dict, price: float, client) -> dict:
     if net_shares <= 0:
         return {"ok": False, "clord_id": None, "error": "zero net shares — nothing to exit"}
 
-    price_d      = Decimal(str(price)).quantize(Decimal("0.001"), rounding=ROUND_DOWN)
+    price_d      = Decimal(str(price)).quantize(_tick_dec(client, token_id), rounding=ROUND_DOWN)
     size_shares  = net_shares.quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
     size_usdc    = (price_d * size_shares).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
 
