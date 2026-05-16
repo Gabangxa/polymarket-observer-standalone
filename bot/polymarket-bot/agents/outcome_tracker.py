@@ -50,7 +50,7 @@ def _resolve_tail_yield(signal: dict, current_snapshot: dict):
     Note: hindsight_logger supersedes this with the true resolution when the market closes.
     """
     meta        = signal.get("metadata") or {}
-    entry_price = float(meta.get("current_price") or signal.get("entry_price") or 0)
+    entry_price = float(meta.get("yes_price") or meta.get("current_price") or signal.get("entry_price") or 0)
     exit_price  = float(current_snapshot.get("yes_price") or entry_price)
     outcome     = exit_price >= entry_price
     pnl         = round(exit_price - entry_price, 6)
@@ -61,7 +61,7 @@ def _resolve_neg_risk(signal: dict, snapshots_by_market: dict):
     """
     Neg-risk wins if the over-round has decreased since signal time.
     Re-sums yes_prices for all outcome markets in the event.
-    PnL is expressed in basis points (improvement in over-round).
+    PnL is the raw change in the sum of prices (fractional, same unit as other strategies).
     exit_price stores the current sum of prices for the event.
     """
     meta      = signal.get("metadata") or {}
@@ -81,8 +81,8 @@ def _resolve_neg_risk(signal: dict, snapshots_by_market: dict):
         return None, None, None
 
     current_sum = sum(current_prices)
-    outcome     = current_sum < entry_sum                     # over-round tightened = win
-    pnl         = round((entry_sum - current_sum) * 100, 4)  # basis points change
+    outcome     = current_sum < entry_sum                   # over-round tightened = win
+    pnl         = round(entry_sum - current_sum, 6)         # fractional price units, same as other strategies
     exit_price  = round(current_sum, 6)
     return outcome, exit_price, pnl
 

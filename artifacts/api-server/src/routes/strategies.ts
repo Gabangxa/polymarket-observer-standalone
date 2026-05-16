@@ -1,13 +1,16 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { signalsTable, marketsTable } from "@workspace/db/schema";
-import { sql, eq } from "drizzle-orm";
+import { sql, eq, gte } from "drizzle-orm";
 
 const router: IRouter = Router();
 
 router.get("/strategies/performance", async (req, res) => {
   try {
     // ── Per-strategy stats ────────────────────────────────────────────────────
+    const startOfToday = new Date();
+    startOfToday.setUTCHours(0, 0, 0, 0);
+
     const strategyRows = await db
       .select({
         strategy:      signalsTable.strategy,
@@ -17,6 +20,7 @@ router.get("/strategies/performance", async (req, res) => {
         avgPnl:        sql<number>`round(avg(case when ${signalsTable.resolved} then cast(${signalsTable.pnl} as numeric) end)::numeric, 4)`,
       })
       .from(signalsTable)
+      .where(gte(signalsTable.emittedAt, startOfToday))
       .groupBy(signalsTable.strategy);
 
     const strategies = strategyRows.map((r) => ({
@@ -43,6 +47,7 @@ router.get("/strategies/performance", async (req, res) => {
       })
       .from(signalsTable)
       .leftJoin(marketsTable, eq(signalsTable.marketId, marketsTable.marketId))
+      .where(gte(signalsTable.emittedAt, startOfToday))
       .groupBy(
         sql`coalesce((${marketsTable.tags})[1], 'uncategorized')`,
         signalsTable.strategy,
