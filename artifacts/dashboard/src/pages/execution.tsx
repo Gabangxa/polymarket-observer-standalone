@@ -526,9 +526,12 @@ function ClosedBlotter() {
                   {formatInTz(closedAt(o), "MMM dd HH:mm:ss", timezone)}
                 </td>
                 <td
-                  className="px-4 py-3 text-xs font-mono max-w-[200px] truncate"
-                  style={{ color: "var(--color-accent-danger)" }}
-                  title={o.errorMsg ?? ""}
+                  className="px-4 py-3 text-xs font-mono min-w-[200px] max-w-[360px] whitespace-pre-wrap break-words"
+                  style={{
+                    color: o.errorMsg
+                      ? "var(--color-accent-danger)"
+                      : "var(--color-text-tertiary)",
+                  }}
                 >
                   {o.errorMsg ?? "—"}
                 </td>
