@@ -85,6 +85,10 @@ router.post("/signals", async (req, res) => {
       res.status(400).json({ error: "strategy is required" });
       return;
     }
+    if (body.signalScore != null && parseFloat(String(body.signalScore)) < 0.75) {
+      res.status(400).json({ error: "signalScore must be ≥ 0.75" });
+      return;
+    }
 
     const { strategy, marketId, eventSlug } = body;
 

@@ -229,6 +229,7 @@ export type ListSnapshotsParams = {
 
 export type GetMarketSnapshotsParams = {
   limit?: number;
+  hours?: number;
 };
 
 export type ListSignalsParams = {

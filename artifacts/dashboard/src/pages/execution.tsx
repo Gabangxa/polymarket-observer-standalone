@@ -30,6 +30,7 @@ import {
   useCancelAllOrders,
   useSetBankroll,
   useSubmitSignal,
+  useMarketSignals,
   useExecutorStatus,
   usePauseExecutor,
   useResumeExecutor,
@@ -753,6 +754,10 @@ function ManualSignalPanel() {
   const [success, setSuccess] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const { data: signalData } = useMarketSignals(marketId);
+  const latestSignal = signalData?.signals?.[0] ?? null;
+  const latestScore = latestSignal ? parseNumeric(latestSignal.signalScore) : null;
+
   const markets = (marketsData?.markets ?? []).filter((m) =>
     !search || m.question?.toLowerCase().includes(search.toLowerCase()),
   );
@@ -761,6 +766,11 @@ function ManualSignalPanel() {
     e.preventDefault();
     setError(null);
     setSuccess(null);
+    const scoreNum = parseFloat(score);
+    if (isNaN(scoreNum) || scoreNum < 0.75) {
+      setError("Signal score must be ≥ 0.75");
+      return;
+    }
     submitSignal.mutate(
       {
         strategy,
@@ -830,8 +840,26 @@ function ManualSignalPanel() {
               </div>
             )}
             {marketId && (
-              <div className="text-[10px] font-mono" style={{ color: "var(--color-accent-primary)" }}>
-                Selected: {marketId.slice(0, 32)}…
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[10px] font-mono" style={{ color: "var(--color-accent-primary)" }}>
+                  {marketId.slice(0, 32)}…
+                </span>
+                {latestScore !== null ? (
+                  <span
+                    className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded-sm border"
+                    style={
+                      latestScore >= 0.75
+                        ? { color: "var(--color-accent-success)", background: "color-mix(in srgb, var(--color-accent-success) 10%, transparent)", borderColor: "color-mix(in srgb, var(--color-accent-success) 30%, transparent)" }
+                        : { color: "var(--color-accent-danger)", background: "color-mix(in srgb, var(--color-accent-danger) 10%, transparent)", borderColor: "color-mix(in srgb, var(--color-accent-danger) 30%, transparent)" }
+                    }
+                  >
+                    latest signal: {latestScore.toFixed(3)} {latestScore < 0.75 ? "⚠ below threshold" : ""}
+                  </span>
+                ) : signalData !== undefined ? (
+                  <span className="text-[10px] font-mono" style={{ color: "var(--color-text-tertiary)" }}>
+                    no recent signal
+                  </span>
+                ) : null}
               </div>
             )}
           </div>
