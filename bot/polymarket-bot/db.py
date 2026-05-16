@@ -346,31 +346,41 @@ def prune_watchlist(keep_ids: list[str]) -> int:
 
     Safety: returns 0 immediately if keep_ids is empty — never wipes the
     entire DB due to an upstream API failure returning an empty list.
+
+    Resolution preservation: any market referenced by an unresolved
+    neg-risk signal is merged into keep_ids so its snapshots survive
+    watchlist rotation. Without this, outcome_tracker loses the data
+    required to resolve cross-watchlist neg-risk events.
+
     Returns the number of markets removed.
     """
     if not keep_ids:
         return 0
+    protected = set(keep_ids) | set(get_neg_risk_referenced_markets())
+    keep_list = list(protected)
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "DELETE FROM signals WHERE market_id IS NOT NULL AND NOT (market_id = ANY(%s))",
-                (keep_ids,),
+                (keep_list,),
             )
             signal_count = cur.rowcount
             cur.execute(
                 "DELETE FROM snapshots WHERE NOT (market_id = ANY(%s))",
-                (keep_ids,),
+                (keep_list,),
             )
             snap_count = cur.rowcount
             cur.execute(
                 "DELETE FROM markets WHERE NOT (market_id = ANY(%s))",
-                (keep_ids,),
+                (keep_list,),
             )
             market_count = cur.rowcount
     if market_count:
+        protected_extras = len(protected) - len(keep_ids)
         logger.info(
             f"Watchlist pruned: removed {market_count} market(s), "
-            f"{snap_count} snapshot(s), {signal_count} signal(s)"
+            f"{snap_count} snapshot(s), {signal_count} signal(s). "
+            f"Preserved {protected_extras} market(s) for unresolved neg-risk legs."
         )
     return market_count
 
@@ -704,6 +714,51 @@ def update_signal_outcome(signal_id: int, exit_price: float, pnl: float, outcome
                     outcome    = %s
                 WHERE id = %s
             """, (exit_price, pnl, outcome, signal_id))
+
+
+def archive_signal(signal_id: int) -> None:
+    """
+    Mark a signal as resolved with no outcome (NULL).
+    Used for signals that aged past their grace window and cannot be resolved —
+    e.g., neg-risk events whose outcome markets were pruned from the watchlist
+    before live API resolution could complete.
+
+    Distinguishes "unresolvable" from WIN/LOSS in calibration:
+    Brier / log-loss queries should filter on `outcome IS NOT NULL`.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE signals
+                SET resolved   = TRUE,
+                    outcome    = NULL,
+                    exit_price = NULL,
+                    pnl        = NULL
+                WHERE id = %s
+            """, (signal_id,))
+
+
+def get_neg_risk_referenced_markets() -> list[str]:
+    """
+    Collect every market_id referenced inside metadata->outcomes[]->market_id of
+    unresolved neg_risk_overround signals.
+
+    Used by prune_watchlist to preserve snapshots for legs of signals that still
+    need resolution, even if the leg's market has rotated off the active watchlist.
+    Without this protection, watchlist rotation destroys the snapshot history
+    required to resolve neg-risk signals — producing permanent backlog.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT (outcome->>'market_id') AS market_id
+                FROM signals,
+                     jsonb_array_elements(metadata->'outcomes') AS outcome
+                WHERE strategy = 'neg_risk_overround'
+                  AND resolved = FALSE
+                  AND outcome->>'market_id' IS NOT NULL
+            """)
+            return [r["market_id"] for r in cur.fetchall()]
 
 
 # ── orders table ─────────────────────────────────────────────────────────────
