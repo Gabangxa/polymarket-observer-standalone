@@ -245,7 +245,11 @@ def run_executor() -> None:
                 try:
                     reconciler.reconcile_orders(client)
                 except Exception as _re:
-                    logger.warning(f"Reconciler error: {_re}")
+                    logger.warning(f"Reconciler error (orders): {_re}")
+                try:
+                    reconciler.reconcile_positions()
+                except Exception as _re:
+                    logger.warning(f"Reconciler error (positions): {_re}")
 
             # Sync pause flag from DB so UI toggle takes effect within one cycle
             try:

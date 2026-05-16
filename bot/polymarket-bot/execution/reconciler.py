@@ -17,10 +17,13 @@
 # only marks terminal states or logs orphans.
 
 import logging
+import os
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal
 
 import alerts
 import db
+import api as polymarket_api
 from execution import order_manager
 
 logger = logging.getLogger(__name__)
@@ -28,6 +31,10 @@ logger = logging.getLogger(__name__)
 # Orders stuck in SENT or PENDING_SUBMISSION past this threshold are considered
 # zombies — the original submission flow didn't complete, retry won't help.
 _ZOMBIE_AGE_MINS = 15
+
+# Per-token drift tolerance (shares). Fills round share quantities to 4dp;
+# anything below this is dust from successive partial fills and rounding.
+_POSITION_DRIFT_TOLERANCE = Decimal("0.01")
 
 
 def _classify(db_orders: list[dict], clob_ids: set[str]) -> dict:
@@ -152,5 +159,99 @@ def reconcile_orders(client) -> dict:
         f"reconcile_orders: db={summary['db_open']} clob={summary['clob_open']} "
         f"in_sync={summary['in_sync']} reconciled={summary['reconciled']} "
         f"zombies={summary['zombies']} orphans={summary['orphans']}"
+    )
+    return summary
+
+
+def _wallet_address() -> str:
+    """
+    Return the address whose Polymarket positions we should reconcile against.
+    For sig_type 1/3 (proxy / 1271): POLYMARKET_FUNDER. For sig_type 0 (EOA),
+    a real lookup needs the signer's derived address — currently not wired.
+    Returns "" if no address is available; callers should skip reconciliation.
+    """
+    return os.environ.get("POLYMARKET_FUNDER", "").strip()
+
+
+def reconcile_positions() -> dict:
+    """
+    Diff the bot's positions table against the Polymarket Data API's view of
+    the wallet's actual holdings. Detection only — never auto-writes to the
+    positions table. Drift means either:
+      • A fill the bot's poll_order_status missed (correct value lives on the
+        exchange; operator should resync).
+      • A manual exchange action (deposit, transfer, manual order/cancel).
+      • A bug in the position-update path.
+
+    Tolerates dust below _POSITION_DRIFT_TOLERANCE shares.
+    Returns a summary dict with drift counts; alerts only when drift > 0.
+    """
+    address = _wallet_address()
+    if not address:
+        return {
+            "db_rows":       0,
+            "wallet_rows":   0,
+            "drift_markets": 0,
+            "skipped":       "no POLYMARKET_FUNDER set",
+        }
+
+    db_positions = db.get_all_open_positions()
+    wallet       = polymarket_api.get_user_positions(address)
+
+    # Aggregate DB net shares per token_id.
+    # YES = total_bought - total_sold; the bot only longs YES today, so net = exposure.
+    db_by_token: dict[str, Decimal] = {}
+    for p in db_positions:
+        tok = p.get("token_id")
+        if not tok:
+            continue
+        net = Decimal(str(p.get("total_bought") or 0)) - Decimal(str(p.get("total_sold") or 0))
+        if net != 0:
+            db_by_token[tok] = db_by_token.get(tok, Decimal("0")) + net
+
+    # Wallet positions: each entry has 'asset' (= token_id) and 'size' (shares).
+    wallet_by_token: dict[str, Decimal] = {}
+    for w in wallet:
+        tok = w.get("asset") or w.get("token_id")
+        if not tok:
+            continue
+        try:
+            size = Decimal(str(w.get("size") or 0))
+        except Exception:
+            continue
+        if size != 0:
+            wallet_by_token[tok] = wallet_by_token.get(tok, Decimal("0")) + size
+
+    drift_markets = []
+    all_tokens = set(db_by_token) | set(wallet_by_token)
+    for tok in all_tokens:
+        db_qty     = db_by_token.get(tok, Decimal("0"))
+        wallet_qty = wallet_by_token.get(tok, Decimal("0"))
+        if abs(db_qty - wallet_qty) > _POSITION_DRIFT_TOLERANCE:
+            drift_markets.append({
+                "token_id":   tok,
+                "db_qty":     float(db_qty),
+                "wallet_qty": float(wallet_qty),
+                "delta":      float(wallet_qty - db_qty),
+            })
+            logger.warning(
+                f"reconcile_positions: DRIFT | token={tok[:20]}… "
+                f"db_net={db_qty} wallet={wallet_qty} delta={wallet_qty - db_qty}"
+            )
+
+    summary = {
+        "db_rows":       len(db_by_token),
+        "wallet_rows":   len(wallet_by_token),
+        "drift_markets": len(drift_markets),
+        "drift_detail":  drift_markets[:10],   # cap for log payload
+    }
+
+    if drift_markets:
+        alerts.position_drift(summary)
+
+    logger.info(
+        f"reconcile_positions: db_tokens={summary['db_rows']} "
+        f"wallet_tokens={summary['wallet_rows']} "
+        f"drift={summary['drift_markets']}"
     )
     return summary

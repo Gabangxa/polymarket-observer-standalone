@@ -170,3 +170,22 @@ def get_trades(
 ) -> list[dict]:
     """Get recent trade history for a market."""
     return _get(DATA_API, "/trades", {"market": market_id, "limit": limit})
+
+
+def get_user_positions(user_address: str) -> list[dict]:
+    """
+    Get all positions held by a wallet address (proxy/funder for sig_type=1/3,
+    or the EOA for sig_type=0).
+
+    Returns the parsed JSON list. Each entry typically includes asset
+    (token_id), size (shares held), avgPrice, conditionId, etc.
+    Returns [] on any error so callers can soft-fail in reconciliation paths.
+    """
+    if not user_address:
+        return []
+    try:
+        data = _get(DATA_API, "/positions", {"user": user_address})
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        logger.warning(f"get_user_positions failed for {user_address}: {e}")
+        return []
