@@ -24,7 +24,7 @@ from config import (
     EXECUTOR_POLL_SECS,
     MAX_SIGNAL_AGE_SECS,
 )
-from execution import pre_trade_gate, order_manager, exit_manager
+from execution import pre_trade_gate, order_manager, exit_manager, connection_checker
 from execution.auth import get_client
 
 logger = logging.getLogger(__name__)
@@ -217,15 +217,24 @@ def run_executor() -> None:
         f"strategies={EXECUTION_STRATEGIES} | min_score={EXECUTION_MIN_SCORE}"
     )
 
-    client = None
+    client  = None
+    _cycle  = 0
+    _CHECK_EVERY = 30   # run connection check on cycle 1 then every ~5 min (30 × 10s)
 
     while True:
         placed   = 0
         repriced = 0
+        _cycle  += 1
         try:
             if client is None:
                 client = get_client()
                 logger.info("Executor: CLOB client ready")
+
+            if _cycle == 1 or _cycle % _CHECK_EVERY == 0:
+                try:
+                    connection_checker.run_check(client)
+                except Exception as _ce:
+                    logger.warning(f"Connection check error: {_ce}")
 
             # Sync pause flag from DB so UI toggle takes effect within one cycle
             try:

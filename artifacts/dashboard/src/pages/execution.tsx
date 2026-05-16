@@ -34,6 +34,7 @@ import {
   useExecutorStatus,
   usePauseExecutor,
   useResumeExecutor,
+  type ConnectionStatus as ConnectionStatusData,
 } from "@/hooks/use-polymarket";
 import { TableSkeleton, Badge } from "@/components/ui-elements";
 import {
@@ -950,6 +951,70 @@ function ManualSignalPanel() {
   );
 }
 
+// ── Connection probe indicators ────────────────────────────────────────────────
+
+function ConnDot({
+  ok,
+  label,
+  unknown,
+}: {
+  ok: boolean;
+  label: string;
+  unknown?: boolean;
+}) {
+  const color = unknown
+    ? "var(--color-text-tertiary)"
+    : ok
+    ? "var(--color-accent-success)"
+    : "var(--color-accent-danger)";
+
+  return (
+    <div className="flex items-center gap-1" title={label}>
+      <span
+        className={cn("w-1.5 h-1.5 rounded-full", !unknown && !ok && "animate-pulse")}
+        style={{ background: color }}
+      />
+      <span className="text-[10px] font-mono" style={{ color }}>
+        {label}
+      </span>
+    </div>
+  );
+}
+
+function ConnStatus({ conn }: { conn: ConnectionStatusData | null | undefined }) {
+  if (conn === undefined) return null;
+
+  const unknown = conn === null;
+  const age = conn?.checkedAt
+    ? Math.floor((Date.now() - new Date(conn.checkedAt).getTime()) / 1000)
+    : null;
+
+  return (
+    <div
+      className="flex items-center gap-3 px-3 py-1.5 rounded-sm"
+      style={{
+        background: "var(--color-app-surface-hover)",
+        border: "1px solid var(--color-app-border)",
+      }}
+      title={
+        conn?.error
+          ? `Error: ${conn.error}`
+          : age !== null
+          ? `Last checked ${age}s ago`
+          : "No check run yet"
+      }
+    >
+      <ConnDot ok={conn?.clobReachable ?? false} label="CLOB" unknown={unknown} />
+      <ConnDot ok={conn?.walletAuthenticated ?? false} label="Wallet" unknown={unknown} />
+      {age !== null && (
+        <span className="text-[10px] font-mono" style={{ color: "var(--color-text-tertiary)" }}>
+          {age < 60 ? `${age}s ago` : `${Math.floor(age / 60)}m ago`}
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ── Executor toggle ────────────────────────────────────────────────────────────
 
 function ExecutorToggle() {
@@ -978,49 +1043,49 @@ function ExecutorToggle() {
         onCancel={() => setConfirmPause(false)}
       />
 
-      <div className="flex items-center gap-2">
-        <span
-          className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-sm border ${
-            paused
-              ? "text-amber-400 bg-amber-400/10 border-amber-400/30 animate-pulse"
-              : "text-emerald-400 bg-emerald-400/10 border-emerald-400/30"
-          }`}
-        >
-          {paused ? "PAUSED" : "RUNNING"}
-        </span>
+      <ConnStatus conn={status?.connection} />
 
-        <button
-          disabled={loading}
-          onClick={() => {
-            if (paused) {
-              resume.mutate();
-            } else {
-              setConfirmPause(true);
-            }
-          }}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono rounded-sm transition-colors"
-          style={{
-            color: paused ? "var(--color-accent-success)" : "var(--color-accent-warning, #f59e0b)",
-            background: paused
-              ? "color-mix(in srgb, var(--color-accent-success) 10%, transparent)"
-              : "color-mix(in srgb, #f59e0b 10%, transparent)",
-            border: paused
-              ? "1px solid color-mix(in srgb, var(--color-accent-success) 30%, transparent)"
-              : "1px solid color-mix(in srgb, #f59e0b 30%, transparent)",
-            opacity: loading ? 0.5 : 1,
-            cursor: loading ? "not-allowed" : "pointer",
-          }}
-        >
-          {loading ? (
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          ) : paused ? (
-            <CirclePlay className="w-3.5 h-3.5" />
-          ) : (
-            <CirclePause className="w-3.5 h-3.5" />
-          )}
-          {paused ? "Resume" : "Pause"} Executor
-        </button>
-      </div>
+      <span
+        className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-sm border ${
+          paused
+            ? "text-amber-400 bg-amber-400/10 border-amber-400/30 animate-pulse"
+            : "text-emerald-400 bg-emerald-400/10 border-emerald-400/30"
+        }`}
+      >
+        {paused ? "PAUSED" : "RUNNING"}
+      </span>
+
+      <button
+        disabled={loading}
+        onClick={() => {
+          if (paused) {
+            resume.mutate();
+          } else {
+            setConfirmPause(true);
+          }
+        }}
+        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono rounded-sm transition-colors"
+        style={{
+          color: paused ? "var(--color-accent-success)" : "var(--color-accent-warning, #f59e0b)",
+          background: paused
+            ? "color-mix(in srgb, var(--color-accent-success) 10%, transparent)"
+            : "color-mix(in srgb, #f59e0b 10%, transparent)",
+          border: paused
+            ? "1px solid color-mix(in srgb, var(--color-accent-success) 30%, transparent)"
+            : "1px solid color-mix(in srgb, #f59e0b 30%, transparent)",
+          opacity: loading ? 0.5 : 1,
+          cursor: loading ? "not-allowed" : "pointer",
+        }}
+      >
+        {loading ? (
+          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+        ) : paused ? (
+          <CirclePlay className="w-3.5 h-3.5" />
+        ) : (
+          <CirclePause className="w-3.5 h-3.5" />
+        )}
+        {paused ? "Resume" : "Pause"} Executor
+      </button>
     </>
   );
 }

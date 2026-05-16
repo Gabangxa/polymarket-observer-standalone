@@ -5,7 +5,8 @@ import { eq, sql } from "drizzle-orm";
 
 const router: IRouter = Router();
 
-const PAUSED_KEY = "executor_paused";
+const PAUSED_KEY            = "executor_paused";
+const CONNECTION_STATUS_KEY = "connection_status";
 
 async function ensureTable() {
   await db.execute(sql`
@@ -31,13 +32,32 @@ async function setPausedFlag(paused: boolean) {
 router.get("/execution/status", async (req, res) => {
   try {
     await ensureTable();
-    const [row] = await db
-      .select({ value: botConfigTable.value })
+    const rows = await db
+      .select({ key: botConfigTable.key, value: botConfigTable.value })
       .from(botConfigTable)
-      .where(eq(botConfigTable.key, PAUSED_KEY))
-      .limit(1);
+      .where(sql`${botConfigTable.key} IN (${PAUSED_KEY}, ${CONNECTION_STATUS_KEY})`);
 
-    res.json({ paused: row ? row.value === "true" : false });
+    const byKey = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+
+    let connection: {
+      clobReachable: boolean;
+      walletAuthenticated: boolean;
+      checkedAt: string;
+      error?: string | null;
+    } | null = null;
+
+    if (byKey[CONNECTION_STATUS_KEY]) {
+      try {
+        connection = JSON.parse(byKey[CONNECTION_STATUS_KEY]);
+      } catch {
+        // malformed JSON — surface nothing
+      }
+    }
+
+    res.json({
+      paused:     byKey[PAUSED_KEY] === "true",
+      connection,
+    });
   } catch (err) {
     req.log.error({ err }, "Failed to get executor status");
     res.status(500).json({ error: "Failed to get executor status" });

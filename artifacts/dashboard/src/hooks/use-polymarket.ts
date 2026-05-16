@@ -162,8 +162,15 @@ export function useSetBankroll() {
   });
 }
 
+export type ConnectionStatus = {
+  clobReachable: boolean;
+  walletAuthenticated: boolean;
+  checkedAt: string;
+  error?: string | null;
+};
+
 export function useExecutorStatus() {
-  return useQuery<{ paused: boolean }>({
+  return useQuery<{ paused: boolean; connection: ConnectionStatus | null }>({
     queryKey: ["execution", "status"],
     queryFn: async () => {
       const res = await fetch("/api/execution/status");
