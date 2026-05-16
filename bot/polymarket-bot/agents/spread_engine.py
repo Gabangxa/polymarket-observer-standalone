@@ -41,7 +41,8 @@ def _analyse_snapshot(snapshot):
     if not midpoint or midpoint <= 0:
         midpoint = yes_price
 
-    spread_f = float(spread)
+    neg_risk  = bool(snapshot.get("neg_risk", False))
+    spread_f  = float(spread)
     fee_rt = _estimate_fee(float(midpoint), tags, fee_bps) * 2
 
     if fee_rt <= 0:
@@ -56,6 +57,7 @@ def _analyse_snapshot(snapshot):
             "event_slug":     snapshot.get("event_slug"),
             "question":       snapshot.get("question"),
             "tags":           tags,
+            "neg_risk":       neg_risk,
             "yes_price":      round(float(yes_price), 4),
             "spread":         round(spread_f, 4),
             "fee_round_trip": 0.0,
@@ -89,6 +91,7 @@ def _analyse_snapshot(snapshot):
         "event_slug":     snapshot.get("event_slug"),
         "question":       snapshot.get("question"),
         "tags":           tags,
+        "neg_risk":       neg_risk,
         "yes_price":      round(float(yes_price), 4),
         "spread":         round(spread_f, 4),
         "fee_round_trip": round(fee_rt, 6),

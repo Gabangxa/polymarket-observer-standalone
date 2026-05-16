@@ -57,6 +57,7 @@ def run():
             "strategy":        "tail_yield_engine",
             "market_id":       snap["market_id"],
             "event_slug":      snap.get("event_slug"),
+            "neg_risk":        bool(snap.get("neg_risk", False)),
             "signal_score":    round(score, 4),
             "hours_remaining": round(hours_to_close, 2),
             "yes_price":       yes_price,
