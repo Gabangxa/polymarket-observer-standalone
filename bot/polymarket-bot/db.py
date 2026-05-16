@@ -706,52 +706,6 @@ def update_signal_outcome(signal_id: int, exit_price: float, pnl: float, outcome
             """, (exit_price, pnl, outcome, signal_id))
 
 
-def get_snapshot_pairs(min_hours: float = 0.25, max_hours: float = 2.0) -> list[dict]:
-    """
-    Return (latest, reference) snapshot pair for each market.
-    Used by odds_shift_engine to detect meaningful price movements.
-
-    'reference' is the most recent snapshot that is between min_hours and max_hours old,
-    so the comparison window is configurable and independent of collection frequency.
-    With 30s collection cadence, rn=2 pairs are ~30s apart — far too short for a
-    meaningful shift signal. This query deliberately looks back a real time window.
-    """
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                WITH latest AS (
-                    SELECT DISTINCT ON (market_id)
-                        market_id, yes_price, collected_at, spread
-                    FROM snapshots
-                    WHERE yes_price IS NOT NULL
-                    ORDER BY market_id, collected_at DESC
-                ),
-                reference AS (
-                    SELECT DISTINCT ON (market_id)
-                        market_id,
-                        yes_price  AS ref_price,
-                        collected_at AS ref_at
-                    FROM snapshots
-                    WHERE yes_price IS NOT NULL
-                      AND collected_at <= NOW() - (%(min_h)s * INTERVAL '1 hour')
-                      AND collected_at >= NOW() - (%(max_h)s * INTERVAL '1 hour')
-                    ORDER BY market_id, collected_at DESC
-                )
-                SELECT
-                    l.market_id,
-                    l.yes_price    AS latest_price,
-                    l.collected_at AS latest_at,
-                    l.spread       AS latest_spread,
-                    r.ref_price    AS prev_price,
-                    r.ref_at       AS prev_at,
-                    m.question, m.tags, m.event_slug, m.neg_risk, m.category
-                FROM latest l
-                JOIN reference r  ON l.market_id = r.market_id
-                JOIN markets m    ON l.market_id = m.market_id
-            """, {"min_h": min_hours, "max_h": max_hours})
-            return [dict(r) for r in cur.fetchall()]
-
-
 # ── orders table ─────────────────────────────────────────────────────────────
 
 def insert_order(order: dict) -> int:
