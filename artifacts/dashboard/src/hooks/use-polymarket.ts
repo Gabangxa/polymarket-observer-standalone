@@ -105,6 +105,29 @@ export function useStrategyPerformance() {
   });
 }
 
+export interface OrderAnalyticsRow {
+  strategy: string;
+  sent: number; filled: number; rejected: number;
+  canceled: number; expired: number; error: number; active: number;
+}
+
+export interface OrderAnalytics {
+  totals:     Omit<OrderAnalyticsRow, "strategy">;
+  byStrategy: OrderAnalyticsRow[];
+}
+
+export function useOrderAnalytics() {
+  return useQuery<OrderAnalytics>({
+    queryKey: ["orders", "analytics"],
+    queryFn: async () => {
+      const res = await fetch("/api/orders/analytics");
+      if (!res.ok) throw new Error("Failed to fetch order analytics");
+      return res.json();
+    },
+    refetchInterval: POLLING_INTERVAL,
+  });
+}
+
 export function useLiveOrders(params?: ListOrdersParams) {
   return useQuery({
     ...getListOrdersQueryOptions(params),

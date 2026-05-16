@@ -34,7 +34,9 @@ import {
   useExecutorStatus,
   usePauseExecutor,
   useResumeExecutor,
+  useOrderAnalytics,
   type ConnectionStatus as ConnectionStatusData,
+  type OrderAnalyticsRow,
 } from "@/hooks/use-polymarket";
 import { TableSkeleton, Badge } from "@/components/ui-elements";
 import {
@@ -958,6 +960,176 @@ function ManualSignalPanel() {
   );
 }
 
+// ── Order analytics tab ────────────────────────────────────────────────────────
+
+function AnalyticsStat({
+  label,
+  value,
+  color,
+}: {
+  label: string;
+  value: number;
+  color?: string;
+}) {
+  return (
+    <div
+      className="terminal-panel flex flex-col items-center justify-center px-6 py-5 gap-1"
+      style={{ minWidth: 110 }}
+    >
+      <div
+        className="text-2xl font-bold font-mono"
+        style={{ color: color ?? "var(--color-text-primary)" }}
+      >
+        {value}
+      </div>
+      <div className="text-[11px] font-mono uppercase tracking-wider" style={{ color: "var(--color-text-tertiary)" }}>
+        {label}
+      </div>
+    </div>
+  );
+}
+
+function StrategyBar({ row, maxSent }: { row: OrderAnalyticsRow; maxSent: number }) {
+  const fillPct = maxSent > 0 ? (row.filled / maxSent) * 100 : 0;
+  const rejPct  = maxSent > 0 ? (row.rejected / maxSent) * 100 : 0;
+  const otherPct = maxSent > 0 ? ((row.canceled + row.expired + row.error) / maxSent) * 100 : 0;
+
+  return (
+    <tr className="border-b border-[var(--color-app-border)]/50">
+      <td className="px-4 py-3">
+        <Badge className={getStrategyColor(row.strategy)}>
+          {row.strategy.replace("_engine", "").replace(/_/g, "-")}
+        </Badge>
+      </td>
+      <td className="px-4 py-3 text-right font-mono text-sm" style={{ color: "var(--color-text-primary)" }}>
+        {row.sent}
+      </td>
+      <td className="px-4 py-3 text-right font-mono text-sm" style={{ color: "var(--color-accent-success)" }}>
+        {row.filled}
+      </td>
+      <td className="px-4 py-3 text-right font-mono text-sm" style={{ color: "var(--color-accent-danger)" }}>
+        {row.rejected}
+      </td>
+      <td className="px-4 py-3 text-right font-mono text-sm" style={{ color: "var(--color-text-secondary)" }}>
+        {row.canceled + row.expired + row.error}
+      </td>
+      <td className="px-4 py-3 text-right font-mono text-sm" style={{ color: "var(--color-accent-primary)" }}>
+        {row.active}
+      </td>
+      <td className="px-4 py-3 min-w-[160px]">
+        <div className="flex h-2 rounded-full overflow-hidden gap-px" style={{ background: "var(--color-app-surface-hover)" }}>
+          {fillPct > 0 && (
+            <div className="h-full rounded-l-full" style={{ width: `${fillPct}%`, background: "var(--color-accent-success)" }} />
+          )}
+          {rejPct > 0 && (
+            <div className="h-full" style={{ width: `${rejPct}%`, background: "var(--color-accent-danger)" }} />
+          )}
+          {otherPct > 0 && (
+            <div className="h-full rounded-r-full" style={{ width: `${otherPct}%`, background: "var(--color-text-tertiary)" }} />
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function OrderAnalyticsTab() {
+  const { data, isLoading } = useOrderAnalytics();
+  const t = data?.totals;
+
+  if (isLoading) {
+    return (
+      <div className="p-8 space-y-4 animate-pulse">
+        <div className="h-24 bg-muted rounded" />
+        <div className="h-40 bg-muted rounded" />
+      </div>
+    );
+  }
+
+  if (!data) return null;
+
+  const maxSent = Math.max(...(data.byStrategy.map((r) => r.sent)), 1);
+  const fillRate = t && t.sent > 0 ? ((t.filled / t.sent) * 100).toFixed(1) : "—";
+  const rejectRate = t && t.sent > 0 ? ((t.rejected / t.sent) * 100).toFixed(1) : "—";
+
+  return (
+    <div className="p-6 space-y-6">
+      {/* ── Top counters ── */}
+      <div className="flex flex-wrap gap-3">
+        <AnalyticsStat label="Total Sent"  value={t?.sent     ?? 0} />
+        <AnalyticsStat label="Filled"      value={t?.filled   ?? 0} color="var(--color-accent-success)" />
+        <AnalyticsStat label="Rejected"    value={t?.rejected ?? 0} color="var(--color-accent-danger)" />
+        <AnalyticsStat label="Canceled"    value={t?.canceled ?? 0} />
+        <AnalyticsStat label="Expired"     value={t?.expired  ?? 0} />
+        <AnalyticsStat label="Error"       value={t?.error    ?? 0} color="var(--color-accent-danger)" />
+        <AnalyticsStat label="Active"      value={t?.active   ?? 0} color="var(--color-accent-primary)" />
+        <div
+          className="terminal-panel flex flex-col items-center justify-center px-6 py-5 gap-1"
+          style={{ minWidth: 110 }}
+        >
+          <div className="text-2xl font-bold font-mono" style={{ color: "var(--color-accent-success)" }}>
+            {fillRate}{fillRate !== "—" ? "%" : ""}
+          </div>
+          <div className="text-[11px] font-mono uppercase tracking-wider" style={{ color: "var(--color-text-tertiary)" }}>
+            Fill Rate
+          </div>
+        </div>
+        <div
+          className="terminal-panel flex flex-col items-center justify-center px-6 py-5 gap-1"
+          style={{ minWidth: 110 }}
+        >
+          <div className="text-2xl font-bold font-mono" style={{ color: "var(--color-accent-danger)" }}>
+            {rejectRate}{rejectRate !== "—" ? "%" : ""}
+          </div>
+          <div className="text-[11px] font-mono uppercase tracking-wider" style={{ color: "var(--color-text-tertiary)" }}>
+            Reject Rate
+          </div>
+        </div>
+      </div>
+
+      {/* ── Per-strategy table ── */}
+      {data.byStrategy.length > 0 && (
+        <div className="terminal-panel overflow-hidden" style={{ padding: 0 }}>
+          <div className="terminal-header">Per-Strategy Breakdown</div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left whitespace-nowrap">
+              <thead
+                className="text-xs font-mono uppercase"
+                style={{
+                  color: "var(--color-text-tertiary)",
+                  background: "color-mix(in srgb, var(--color-app-surface-hover) 50%, transparent)",
+                  borderBottom: "1px solid var(--color-app-border)",
+                }}
+              >
+                <tr>
+                  <th className="px-4 py-3 font-medium">Strategy</th>
+                  <th className="px-4 py-3 font-medium text-right">Sent</th>
+                  <th className="px-4 py-3 font-medium text-right">Filled</th>
+                  <th className="px-4 py-3 font-medium text-right">Rejected</th>
+                  <th className="px-4 py-3 font-medium text-right">Canceled/Exp/Err</th>
+                  <th className="px-4 py-3 font-medium text-right">Active</th>
+                  <th className="px-4 py-3 font-medium">Distribution</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.byStrategy.map((row) => (
+                  <StrategyBar key={row.strategy} row={row} maxSent={maxSent} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {data.byStrategy.length === 0 && (
+        <div className="text-center py-16 font-mono text-sm" style={{ color: "var(--color-text-tertiary)" }}>
+          No orders placed yet
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Connection probe indicators ────────────────────────────────────────────────
 
 function ConnDot({
@@ -1099,7 +1271,7 @@ function ExecutorToggle() {
 
 // ── Page ───────────────────────────────────────────────────────────────────────
 
-type BlotterTab = "active" | "closed" | "positions";
+type BlotterTab = "active" | "closed" | "positions" | "analytics";
 
 export default function Execution() {
   const [tab, setTab] = useState<BlotterTab>("active");
@@ -1150,6 +1322,7 @@ export default function Execution() {
     { id: "active",    label: "Order Blotter",     count: activeCount },
     { id: "closed",    label: "Execution Blotter"  },
     { id: "positions", label: "Open Positions",     count: openPositions },
+    { id: "analytics", label: "Order Analytics"    },
   ];
 
   return (
@@ -1387,9 +1560,10 @@ export default function Execution() {
           ))}
         </div>
 
-        {tab === "active" && <ActiveBlotter />}
-        {tab === "closed" && <ClosedBlotter />}
+        {tab === "active"    && <ActiveBlotter />}
+        {tab === "closed"    && <ClosedBlotter />}
         {tab === "positions" && <PositionsBlotter />}
+        {tab === "analytics" && <OrderAnalyticsTab />}
       </div>
     </motion.div>
   );

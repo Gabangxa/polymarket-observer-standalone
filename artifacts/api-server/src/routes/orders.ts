@@ -61,6 +61,60 @@ router.get("/orders", async (req, res) => {
   }
 });
 
+router.get("/orders/analytics", async (req, res) => {
+  try {
+    const rows = await db
+      .select({
+        strategy: ordersTable.strategy,
+        status:   ordersTable.status,
+        count:    sql<number>`cast(count(*) as int)`,
+      })
+      .from(ordersTable)
+      .groupBy(ordersTable.strategy, ordersTable.status);
+
+    // ── Roll up to totals + per-strategy breakdown ─────────────────────────
+    type StratRow = {
+      strategy: string;
+      sent: number; filled: number; rejected: number;
+      canceled: number; expired: number; error: number; active: number;
+    };
+
+    const stratMap = new Map<string, StratRow>();
+
+    const totals = { sent: 0, filled: 0, rejected: 0, canceled: 0, expired: 0, error: 0, active: 0 };
+
+    for (const r of rows) {
+      if (!stratMap.has(r.strategy)) {
+        stratMap.set(r.strategy, { strategy: r.strategy, sent: 0, filled: 0, rejected: 0, canceled: 0, expired: 0, error: 0, active: 0 });
+      }
+      const s = stratMap.get(r.strategy)!;
+      const n = r.count;
+
+      s.sent   += n;
+      totals.sent += n;
+
+      switch (r.status) {
+        case "FILLED":            s.filled   += n; totals.filled   += n; break;
+        case "REJECTED":          s.rejected += n; totals.rejected += n; break;
+        case "CANCELED":          s.canceled += n; totals.canceled += n; break;
+        case "EXPIRED":           s.expired  += n; totals.expired  += n; break;
+        case "ERROR":             s.error    += n; totals.error    += n; break;
+        case "PENDING_SUBMISSION":
+        case "SUBMITTED":
+        case "PARTIALLY_FILLED":
+        case "CANCEL_REQUESTED":  s.active   += n; totals.active   += n; break;
+      }
+    }
+
+    const byStrategy = [...stratMap.values()].sort((a, b) => b.sent - a.sent);
+
+    res.json({ totals, byStrategy });
+  } catch (err) {
+    req.log.error({ err }, "Failed to get order analytics");
+    res.status(500).json({ error: "Failed to get order analytics" });
+  }
+});
+
 router.delete("/orders/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
