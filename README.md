@@ -1,6 +1,6 @@
 # polymarket-observer-standalone
 
-A monorepo for observing and displaying Polymarket prediction market data. Built with a Node.js API, React dashboards, and a Python bot.
+Monorepo for observing, scoring, and executing on Polymarket prediction markets. Combines a Node.js API server, two React frontends, a shared Postgres schema, and a Python bot that places live CLOB orders.
 
 ## Monorepo Structure
 
@@ -15,135 +15,134 @@ A monorepo for observing and displaying Polymarket prediction market data. Built
 │   ├── api-spec/            # @workspace/api-spec         — Shared API types
 │   ├── api-zod/             # @workspace/api-zod          — Zod validation schemas
 │   └── api-client-react/    # @workspace/api-client-react — React Query hooks
-├── bot/                     # Python Polymarket bot (standalone)
+├── bot/polymarket-bot/      # Python observer + executor
 ├── scripts/                 # @workspace/scripts
-├── Dockerfile.api            # Builds api-server
-├── Dockerfile.dashboard      # Builds dashboard (nginx)
-├── Dockerfile.mockup-sandbox # Builds mockup-sandbox (nginx)
-└── railway.toml              # Railway deploy config (api-server)
+├── Dockerfile.api            # api-server image
+├── Dockerfile.bot            # bot image (pip + requirements.txt)
+├── Dockerfile.dashboard      # dashboard image (nginx)
+├── Dockerfile.mockup-sandbox # mockup-sandbox image (nginx)
+├── railway.api.toml          # Railway deploy config for api-server
+├── requirements.txt          # Bot runtime deps (single source of truth)
+├── pyproject.toml            # Python project metadata (kept aligned with requirements.txt)
+└── pnpm-workspace.yaml       # Node workspace manifest
 ```
 
 ## Prerequisites
 
 - Node.js 24+
-- pnpm 9+
-- PostgreSQL database
+- pnpm 9+ (npm/yarn are blocked by the preinstall hook)
+- Python 3.11+
+- PostgreSQL 16
 
 ## Local Development
 
 ```bash
-# Install dependencies
+# Node side
 pnpm install
-
-# Start API server
-pnpm --filter @workspace/api-server dev
-
-# Start dashboard
-pnpm --filter @workspace/dashboard dev
-
-# Start mockup sandbox
+pnpm --filter @workspace/api-server     dev
+pnpm --filter @workspace/dashboard      dev
 pnpm --filter @workspace/mockup-sandbox dev
+pnpm --filter @workspace/db push        # push DB schema
 
-# Push DB schema
-pnpm --filter @workspace/db push
+# Python bot (uses pip with requirements.txt)
+cd bot/polymarket-bot
+pip install -r ../../requirements.txt
+python scheduler.py
 ```
-
-## Environment Variables
-
-| Variable | Required by | Description |
-|---|---|---|
-| `DATABASE_URL` | api-server, db | PostgreSQL connection string |
-
-Copy `.env.example` to `.env` and fill in values before running locally.
 
 ## Railway Deployment
 
-This repo deploys as multiple Railway services from a single GitHub repo.
+Each component runs as its own Railway service from this single repo.
 
-### Service Configuration
-
-Each service must be configured in the Railway UI:
-
-| Service | `RAILWAY_DOCKERFILE_PATH` | Healthcheck | Release Command |
-|---|---|---|---|
-| `api-server` | `Dockerfile.api` | `/api/healthz` | `pnpm --filter @workspace/db push --force` |
-| `dashboard` | `Dockerfile.dashboard` | `/` | *(none)* |
-| `mockup-sandbox` | `Dockerfile.mockup-sandbox` | `/` | *(none)* |
+| Service          | `RAILWAY_DOCKERFILE_PATH`     | Healthcheck     | Release / Start Command                                    |
+|------------------|-------------------------------|-----------------|------------------------------------------------------------|
+| `api-server`     | `Dockerfile.api`              | `/api/healthz`  | Release: `pnpm --filter @workspace/db push --force`        |
+| `dashboard`      | `Dockerfile.dashboard`        | `/`             | *(nginx default)*                                          |
+| `mockup-sandbox` | `Dockerfile.mockup-sandbox`   | `/`             | *(nginx default)*                                          |
+| `bot`            | `Dockerfile.bot`              | `/health`       | Start: `python scheduler.py`                               |
 
 ### Setup Steps
 
-1. **Provision a PostgreSQL database** in Railway — `DATABASE_URL` is auto-injected into all services.
-2. **Set `RAILWAY_DOCKERFILE_PATH`** as a service variable on each service (see table above).
-3. **Clear Root Directory** on all services — leave it blank so the full repo is the Docker build context.
-4. **Clear Start Command** on `dashboard` and `mockup-sandbox` — nginx starts automatically from the Dockerfile.
-5. **Clear Release Command** on `dashboard` and `mockup-sandbox` — only `api-server` needs the DB migration.
-
-### Bot Service
-
-The Python bot (`bot/`) is a separate Railway service:
-
-- **Source**: same repo
-- **Dockerfile**: `Dockerfile.bot`
-- **Root Directory**: *(blank)*
+1. **Provision a PostgreSQL database** in Railway — `DATABASE_URL` is auto-injected into all services that reference it.
+2. **Set `RAILWAY_DOCKERFILE_PATH`** as a service variable on each service.
+3. **Clear Root Directory** on every service — leave blank so the full repo is the Docker build context.
+4. **Bot-only env vars**: configure execution credentials in the bot service before enabling live orders (see [Bot environment variables](#bot-environment-variables)).
 
 ---
 
-## Python Bot — Signal Pipeline
+## Python Bot — Signal & Execution Pipeline
 
-The bot is a read-only observer. It never places orders. It runs a pipeline every `POLL_INTERVAL_SECONDS` (default 30 s) that produces structured signals for manual review.
+The bot does two things on every cycle:
 
-### Pipeline order
+1. **Observes**: scans the Gamma API, snapshots each watched market, runs strategy engines that emit signals to the `signals` table.
+2. **Executes**: if `POLYGON_PRIVATE_KEY` and `BANKROLL_USDC` are set, a separate daemon thread picks up qualified signals and places CLOB orders. Kill switches are available via the HTTP server.
+
+### Pipeline order (every 30 s)
 
 ```
-market_scanner → data_collector → [signal engines] → outcome_tracker → hindsight_logger
+market_scanner → data_collector → pnl_tracker → spread_engine
+              → neg_risk_engine → tail_yield_engine
+              → outcome_tracker → hindsight_logger
 ```
 
-| Agent | Role |
-|---|---|
-| `market_scanner` | Scores and selects up to `MAX_WATCHLIST_SIZE` markets from Gamma API |
-| `data_collector` | Snapshots each watched market into Postgres |
-| `spread_engine` | Flags spread > 2× round-trip fee |
-| `micro_spread_engine` | Flags tighter spread scalp opportunities |
-| `neg_risk_engine` | Detects over-round collapse across multi-outcome events |
-| `binary_arb_engine` | Detects YES ask + NO ask < 1.0 (guaranteed profit) |
-| `tail_yield_engine` | Flags near-certain YES markets with yield before expiry |
-| `reversion_engine` | Detects sharp price moves likely to revert |
-| `odds_shift_engine` | Detects inter-snapshot price shifts |
-| `outcome_tracker` | Resolves short-window signals (spread, arb, micro-spread) using snapshot comparison |
-| `hindsight_logger` | Resolves directional + tail-yield signals when markets fully resolve |
+The `market_scanner` step is gated behind `SCAN_INTERVAL_RUNS` (default: every 12 runs ≈ 6 min). All other steps run every tick.
 
-### Data collection — light vs. deep
+### Active agents
 
-The collector runs in two modes to reduce API load (~60% fewer calls on light runs):
+| Agent                | Role                                                                                  |
+|----------------------|---------------------------------------------------------------------------------------|
+| `market_scanner`     | Scores and selects up to `MAX_WATCHLIST_SIZE` (default 50) markets from the Gamma API |
+| `data_collector`     | Snapshots each watched market into Postgres                                           |
+| `pnl_tracker`        | Marks open positions to current market price                                          |
+| `spread_engine`      | Flags markets where spread > 2× round-trip fee                                        |
+| `neg_risk_engine`    | Detects over-round across multi-outcome events (taker + maker arb variants)           |
+| `tail_yield_engine`  | Flags near-certain YES markets (≥ 95¢) with positive hold yield before expiry         |
+| `outcome_tracker`    | Resolves short-window signals via snapshot or live API midpoint                       |
+| `hindsight_logger`   | Resolves directional signals when markets fully resolve                               |
 
-| Fields | Cadence | Consumers |
-|---|---|---|
-| `midpoint`, `yes_ask`, `no_ask`, `spread`, `fee_rate_bps` | **Every run** | All 7 signal engines |
-| `price_history`, `open_interest`, `top_holders`, `recent_trades` | **Every `DEEP_COLLECTION_INTERVAL` runs** (default: 6 ≈ every 3 min) | `reversion_engine` only |
+### Execution layer (daemon thread)
 
-The mode is logged per run (`Collection mode: DEEP / light`) and the run counter survives restarts via `state/deep_collection_counter.json`.
+| Module                  | Role                                                                                            |
+|-------------------------|-------------------------------------------------------------------------------------------------|
+| `execution/executor`    | Polls signals, gates them, places orders. NATS fast-path wake; falls back to 10 s timed poll    |
+| `execution/order_manager` | Tick-aware order placement, GTD expiry, reprice on expiry, exit orders                        |
+| `execution/pre_trade_gate` | Strategy allowlist, bankroll, freshness, idempotency, portfolio + position exposure          |
+| `execution/exit_manager` | NATS-driven trail / spread-compression / yield-decay exits                                     |
+| `execution/reconciler`  | Periodic DB ↔ CLOB order-state and DB ↔ wallet position-state reconciliation (every ~5 min)     |
+| `execution/connection_checker` | Two-probe CLOB reachability + wallet auth verification (every ~5 min)                    |
 
-### Outcome tracking
+### Bot HTTP endpoints
 
-All 7 signal strategies are now tracked:
+`server.py` runs Flask in a background thread, primarily for Replit keep-alive and operator-grade kill switches.
 
-| Strategy | Tracker | Logic |
-|---|---|---|
-| `spread_harvesting` | `outcome_tracker` (2 h) | Price stayed within ½ spread of entry |
-| `micro_spread_scalp` | `outcome_tracker` (2 h) | Price stayed within ½ spread of entry mid |
-| `neg_risk_overround` | `outcome_tracker` (6 h) | Over-round tightened (sum of prices fell) |
-| `mean_reversion` | `outcome_tracker` (4 h) | Price moved back from shock direction |
-| `binary_arb` | `outcome_tracker` (30 min) | YES ask + NO ask still < 1.0 after window |
-| `odds_shift` | `hindsight_logger` | Market resolved in predicted direction |
-| `tail_yield_harvest` | `hindsight_logger` | Market resolved YES |
+| Endpoint                       | Auth          | Purpose                                                  |
+|--------------------------------|---------------|----------------------------------------------------------|
+| `GET /`                        | none          | Liveness probe                                           |
+| `GET /health`                  | none          | JSON health + DB stats                                   |
+| `GET /signals`                 | none          | Last 24 h signals + summary counts                       |
+| `GET /watchlist`               | none          | Current watched markets                                  |
+| `GET /logs?lines=N&level=...`  | `X-API-Key`   | Tail today's log file                                    |
+| `GET /execution/status`        | none          | Paused flag + open order count                           |
+| `POST /execution/pause`        | `X-API-Key`   | Halt new signal processing (fill polling continues)      |
+| `POST /execution/resume`       | `X-API-Key`   | Resume signal processing                                 |
+| `POST /execution/cancel-all`   | `X-API-Key`   | Cancel every open CLOB order                             |
 
 ### Bot environment variables
 
-Set these in the Railway UI under the bot service:
+Set these in the Railway UI under the bot service.
 
-| Variable | Required | Description |
-|---|---|---|
-| `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `SIGNAL_WEBHOOK_URL` | No | Webhook endpoint for signal notifications |
-| `NATS_URL` | No | NATS server URL for message bus (leave blank to disable) |
-| `EXECUTION_MIN_SCORE` | No | Minimum signal score forwarded to `pm.execution.queue` (default `0.75`) |
+| Variable                       | Required for…           | Description                                                                                       |
+|--------------------------------|-------------------------|---------------------------------------------------------------------------------------------------|
+| `DATABASE_URL`                 | **always**              | PostgreSQL connection string. Auto-injected by Railway's Postgres add-on.                         |
+| `BOT_API_KEY`                  | kill switches           | Secret for `X-API-Key` on `/logs` and `/execution/*` POST endpoints. Fail-closed when unset.      |
+| `POLYGON_PRIVATE_KEY`          | live execution          | Hex private key. Required to initialise the CLOB client. Without it, the executor doesn't start.  |
+| `POLYMARKET_CHAIN_ID`          | live execution          | `137` for Polygon mainnet (default), `80002` for Amoy testnet.                                    |
+| `POLYMARKET_SIGNATURE_TYPE`    | live execution          | `0` = EOA, `1` = POLY_PROXY (default), `3` = POLY_1271.                                           |
+| `POLYMARKET_FUNDER`            | sig_type 1 / 3          | Proxy / deposit wallet address. Also used by `reconcile_positions` to fetch wallet holdings.      |
+| `BANKROLL_USDC`                | live execution          | Capital allocated to the executor. Bot blocks orders until this is > 0 (configured via dashboard).|
+| `EXECUTION_STRATEGIES`         | optional                | Comma-separated allowlist. Defaults to all three engines. Unknown names are silently dropped.     |
+| `EXECUTION_MIN_SCORE`          | optional                | Minimum `signal_score` to execute. Default `0.75`.                                                |
+| `NATS_URL`                     | optional                | NATS endpoint for fast-path signal wake + exit-manager snapshot stream. No-op when unset.         |
+| `SIGNAL_WEBHOOK_URL`           | optional                | HTTP webhook fired on each new signal.                                                            |
+| `DISCORD_WEBHOOK_URL`          | optional                | Discord notification webhook for crashes, fills, rejections, reconciler alerts.                   |
+| `PORT` / `BOT_PORT`            | optional                | HTTP port. Railway sets `PORT`; `BOT_PORT` is a local fallback (default `8080`).                  |
