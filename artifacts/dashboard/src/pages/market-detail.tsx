@@ -14,7 +14,7 @@ export default function MarketDetail() {
   const marketId = params?.id || "";
   const { timezone } = useTimezone();
 
-  const { data, isLoading, isError } = useLiveMarketHistory(marketId, { limit: 168 });
+  const { data, isLoading, isError } = useLiveMarketHistory(marketId, { hours: 168 });
   const { data: signalsData } = useMarketSignals(marketId);
   const latestSignal = signalsData?.signals?.[0] ?? null;
 

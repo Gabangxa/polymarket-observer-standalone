@@ -8,4 +8,5 @@
 
 export type GetMarketSnapshotsParams = {
   limit?: number;
+  hours?: number;
 };
