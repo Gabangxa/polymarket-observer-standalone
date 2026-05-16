@@ -7,8 +7,24 @@ from config import (
     SPREAD_FEE_MULTIPLE, SPREAD_MIN_SIGNAL_SCORE,
     SPREAD_MIN_YES_PRICE, SPREAD_MAX_YES_PRICE,
     FEE_RATES, DEFAULT_FEE_RATE,
+    KELLY_FRACTION, MAX_POSITION_PCT,
 )
 import db
+
+
+def _kelly_for_score(signal_score: float) -> float:
+    """
+    Fraction of bankroll to bet, scaled linearly by signal_score.
+    Full ¼-Kelly position (= MAX_POSITION_PCT × KELLY_FRACTION bankroll) at score=1.0;
+    proportionally smaller below. Order_manager._size_from_signal multiplies this
+    by bankroll and caps at MAX_POSITION_PCT, so the value here never exceeds the cap.
+
+    Spread harvesting has no clean directional Kelly model (the edge is in the
+    microstructure, not the outcome probability) — so we use signal quality as
+    the sizing proxy. A signal at the minimum threshold gets 60% of the slot a
+    score-1.0 signal gets, which matches the relative edge captured.
+    """
+    return round(KELLY_FRACTION * MAX_POSITION_PCT * max(0.0, signal_score), 6)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +82,7 @@ def _analyse_snapshot(snapshot):
             "net_spread":     round(spread_f, 4),
             "fee_multiple":   None,   # infinite — fee-free market
             "signal_score":   round(signal_score, 4),
+            "kelly_fraction": _kelly_for_score(signal_score),
             "sizing_note": (
                 f"Fee-free. Net edge {spread_f:.4f}/share. "
                 f"Adverse selection risk ≈ {spread_f:.4f}/share (full spread). "
@@ -101,6 +118,7 @@ def _analyse_snapshot(snapshot):
         "net_spread":     round(net_spread, 4),
         "fee_multiple":   round(fee_multiple, 2),
         "signal_score":   round(signal_score, 4),
+        "kelly_fraction": _kelly_for_score(signal_score),
         "sizing_note": (
             f"Net edge {net_spread:.4f}/share after {fee_rt:.4f} round-trip fee. "
             f"Adverse selection risk ≈ {spread_f:.4f}/share (full spread). "

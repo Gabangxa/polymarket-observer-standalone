@@ -1,7 +1,10 @@
 import logging
 
 import db
-from config import YIELD_MIN_PRICE, YIELD_HOURS_TO_EXPIRY
+from config import (
+    YIELD_MIN_PRICE, YIELD_HOURS_TO_EXPIRY,
+    KELLY_FRACTION, MAX_POSITION_PCT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +56,19 @@ def run():
         yield_pct = ((1.00 / yes_price) - 1) * 100
         score     = min(yield_pct / 5.0, 1.0)
 
+        # Kelly fraction scales linearly with signal_score.
+        # No empirical q is tracked yet for the tail-yield base rate, so this
+        # uses signal_score as a confidence proxy: full ¼-Kelly slot at score=1.0,
+        # graduated below. _size_from_signal caps at MAX_POSITION_PCT.
+        kelly_fraction = round(KELLY_FRACTION * MAX_POSITION_PCT * max(0.0, score), 6)
+
         signal = {
             "strategy":        "tail_yield_engine",
             "market_id":       snap["market_id"],
             "event_slug":      snap.get("event_slug"),
             "neg_risk":        bool(snap.get("neg_risk", False)),
             "signal_score":    round(score, 4),
+            "kelly_fraction":  kelly_fraction,
             "hours_remaining": round(hours_to_close, 2),
             "yes_price":       yes_price,
             "yield_percentage": round(yield_pct, 4),
