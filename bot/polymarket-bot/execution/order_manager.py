@@ -177,18 +177,18 @@ def _place_neg_risk_legs(signal: dict, client) -> dict:
             continue
 
         try:
-            from py_clob_client.clob_types import OrderArgs, OrderType
+            from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
             order_args = OrderArgs(
                 token_id=token_id,
                 price=float(price),
                 size=float(size_shares),
                 side="BUY",
-                neg_risk=True,
             )
+            _opts = PartialCreateOrderOptions(neg_risk=True)
 
             def _submit():
                 order_args.expiration = str(expiration)
-                signed = client.create_order(order_args)
+                signed = client.create_order(order_args, _opts)
                 return client.post_order(signed, OrderType.GTD)
 
             db.update_order_status(clord_id, "SENT", submitted_at=datetime.now(timezone.utc))
@@ -298,18 +298,18 @@ def _place_neg_risk_maker_legs(signal: dict, client) -> dict:
         db.upsert_position(market_id, yes_token_id, "YES", delta_working_sell=float(size_shares))
 
         try:
-            from py_clob_client.clob_types import OrderArgs, OrderType
+            from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
             order_args = OrderArgs(
                 token_id=yes_token_id,
                 price=float(price),
                 size=float(size_shares),
                 side="SELL",
-                neg_risk=True,
             )
+            _opts = PartialCreateOrderOptions(neg_risk=True)
 
             def _submit():
                 order_args.expiration = str(expiration)
-                signed = client.create_order(order_args)
+                signed = client.create_order(order_args, _opts)
                 return client.post_order(signed, OrderType.GTD)
 
             db.update_order_status(clord_id, "SENT", submitted_at=datetime.now(timezone.utc))
@@ -425,18 +425,18 @@ def place_order(signal: dict, client, reprice_of: int = None) -> dict:
     # Note: tick_size is market-specific (0.01 or 0.001). Defaulting to 0.001.
     # If the CLOB rejects with a tick size error, fetch via client.get_tick_size(token_id).
     try:
-        from py_clob_client.clob_types import OrderArgs, OrderType
+        from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
         order_args = OrderArgs(
             token_id=token_id,
             price=float(price),
             size=float(size_shares),
             side="BUY",
-            neg_risk=bool(signal.get("neg_risk", False)),
         )
+        _opts = PartialCreateOrderOptions(neg_risk=True) if signal.get("neg_risk") else None
 
         def _submit():
             order_args.expiration = str(expiration)
-            signed = client.create_order(order_args)
+            signed = client.create_order(order_args, _opts)
             return client.post_order(signed, OrderType.GTD)
 
         db.update_order_status(clord_id, "SENT", submitted_at=datetime.now(timezone.utc))
@@ -672,18 +672,18 @@ def place_exit_order(position: dict, price: float, client) -> dict:
     db.upsert_position(market_id, token_id, "YES", delta_working_sell=float(size_shares))
 
     try:
-        from py_clob_client.clob_types import OrderArgs, OrderType
+        from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
         order_args = OrderArgs(
             token_id=token_id,
             price=float(price_d),
             size=float(size_shares),
             side="SELL",
-            neg_risk=bool(position.get("neg_risk", False)),
         )
+        _opts = PartialCreateOrderOptions(neg_risk=True) if position.get("neg_risk") else None
 
         def _submit():
             order_args.expiration = str(expiration)
-            signed = client.create_order(order_args)
+            signed = client.create_order(order_args, _opts)
             return client.post_order(signed, OrderType.GTD)
 
         db.update_order_status(clord_id, "SENT", submitted_at=datetime.now(timezone.utc))
