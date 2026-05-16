@@ -41,6 +41,8 @@ DEEP_COLLECTION_INTERVAL = 6     # 1 deep run per 6 ticks ≈ every 3 min at 30s
 # Flag a market when spread > SPREAD_FEE_MULTIPLE × estimated_fee
 SPREAD_FEE_MULTIPLE     = 2.0    # spread must be at least 2× the fee to be interesting
 SPREAD_MIN_SIGNAL_SCORE = 0.6    # 0–1 score threshold to include in report
+SPREAD_MIN_YES_PRICE    = 0.05   # reject markets effectively resolved NO (< 5¢)
+SPREAD_MAX_YES_PRICE    = 0.95   # reject markets effectively resolved YES (> 95¢)
 
 # ── Neg-risk engine thresholds ────────────────────────────────────────────────
 # TAKER: Buy all outcomes instantly. Sum of ASKS must be < 1.0 (after fees).

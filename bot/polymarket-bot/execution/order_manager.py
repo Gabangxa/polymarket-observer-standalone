@@ -270,7 +270,11 @@ def _place_neg_risk_maker_legs(signal: dict, client) -> dict:
             logger.warning(f"Maker leg skipped — no yes_price | market={market_id}")
             continue
 
-        price       = Decimal(str(yes_price)).quantize(Decimal("0.001"), rounding=ROUND_DOWN)
+        price = Decimal(str(yes_price)).quantize(Decimal("0.001"), rounding=ROUND_DOWN)
+        if price <= 0:
+            logger.warning(f"Maker leg skipped — price rounded to zero (raw={yes_price}) | market={market_id}")
+            continue
+
         size_usdc   = _MIN_ORDER_USDC
         size_shares = (size_usdc / price).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
         expiration  = _gtd_expiration("neg_risk_overround")
@@ -389,6 +393,9 @@ def place_order(signal: dict, client, reprice_of: int = None) -> dict:
 
     else:
         return {"ok": False, "clord_id": clord_id, "error": f"no order logic for strategy '{strategy}'"}
+
+    if price <= 0:
+        return {"ok": False, "clord_id": clord_id, "error": f"price rounded to zero (raw={raw_price})"}
 
     size_usdc  = _size_from_signal(signal, "BUY")
     if size_usdc <= 0:

@@ -8,6 +8,7 @@
 #   GET  /health             — JSON health status + DB stats
 #   GET  /signals            — last 24h signals (all strategies)
 #   GET  /watchlist          — current watched markets
+#   GET  /logs               — tail today's log file (?lines=N &level=ERROR &date=YYYY-MM-DD) (requires X-API-Key: BOT_API_KEY)
 #   POST /execution/pause    — halt signal processing  (requires X-API-Key: BOT_API_KEY)
 #   POST /execution/resume   — resume signal processing (requires X-API-Key: BOT_API_KEY)
 #   POST /execution/cancel-all — cancel all open orders (requires X-API-Key: BOT_API_KEY)
@@ -103,6 +104,44 @@ def watchlist():
     except Exception as e:
         logger.error(f"/watchlist failed: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/logs")
+def logs():
+    err = _require_api_key()
+    if err:
+        return err
+
+    try:
+        n_lines = int(request.args.get("lines", 200))
+        if n_lines < 1 or n_lines > 5000:
+            return "lines must be between 1 and 5000", 400
+    except ValueError:
+        return "lines must be an integer", 400
+
+    date_str = request.args.get("date", "")
+    if date_str:
+        try:
+            datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            return "date must be YYYY-MM-DD", 400
+        log_date = date_str
+    else:
+        log_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    log_path = os.path.join("logs", f"run_{log_date}.log")
+    if not os.path.exists(log_path):
+        return f"No log file for {log_date}", 404
+
+    with open(log_path, "r") as f:
+        all_lines = f.readlines()
+
+    level_filter = request.args.get("level", "").upper()
+    if level_filter:
+        all_lines = [l for l in all_lines if f"[{level_filter}]" in l]
+
+    tail = all_lines[-n_lines:]
+    return "".join(tail), 200, {"Content-Type": "text/plain; charset=utf-8"}
 
 
 # ── Execution kill switches ───────────────────────────────────────────────────

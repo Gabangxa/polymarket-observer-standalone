@@ -5,6 +5,7 @@
 import logging
 from config import (
     SPREAD_FEE_MULTIPLE, SPREAD_MIN_SIGNAL_SCORE,
+    SPREAD_MIN_YES_PRICE, SPREAD_MAX_YES_PRICE,
     FEE_RATES, DEFAULT_FEE_RATE,
 )
 import db
@@ -33,6 +34,9 @@ def _analyse_snapshot(snapshot):
     fee_bps   = float(snapshot.get("fee_rate_bps") or 0)
 
     if not spread or spread <= 0 or yes_price is None:
+        return None
+    yes_price_f = float(yes_price)
+    if not (SPREAD_MIN_YES_PRICE <= yes_price_f <= SPREAD_MAX_YES_PRICE):
         return None
     if not midpoint or midpoint <= 0:
         midpoint = yes_price
