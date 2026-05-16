@@ -59,6 +59,9 @@ class _PositionEntry:
     peak_price:   float = field(default=0.0)
     end_date:     datetime | None = field(default=None)
     exit_pending: bool = field(default=False)
+    # neg_risk: must match the market's contract type so place_exit_order selects
+    # the correct EIP-712 contract address. Sourced from markets.neg_risk at seed time.
+    neg_risk:     bool = field(default=False)
 
 
 _index: dict[str, _PositionEntry] = {}
@@ -89,6 +92,7 @@ def _seed_index() -> int:
                 strategy=p.get("strategy") or "",
                 peak_price=avg_cost,   # conservative: assume no upside seen yet
                 end_date=p.get("end_date"),
+                neg_risk=bool(p.get("neg_risk", False)),
             )
     return len(_index)
 
@@ -303,6 +307,7 @@ def _on_fill(subject: str, data: dict) -> None:
                 peak_price   = existing.peak_price if existing else avg_cost,
                 end_date     = existing.end_date   if existing else p.get("end_date"),
                 exit_pending = existing.exit_pending if existing else False,
+                neg_risk     = bool(p.get("neg_risk", False)),
             )
     except Exception as e:
         logger.warning(f"Exit manager fill refresh failed | market={market_id}: {e}")
