@@ -38,12 +38,13 @@ import {
 } from "@/hooks/use-polymarket";
 import { TableSkeleton, Badge } from "@/components/ui-elements";
 import {
-  formatRelativeTime,
+  formatInTz,
   getStrategyColor,
   parseNumeric,
   formatPrice,
   cn,
 } from "@/lib/utils";
+import { useTimezone } from "@/hooks/use-timezone";
 
 // ── Status helpers ─────────────────────────────────────────────────────────────
 
@@ -220,6 +221,7 @@ function ConfirmDialog({
 
 function ActiveBlotter() {
   const { data, isLoading } = useLiveOrders({ status: "active" });
+  const { timezone } = useTimezone();
   const qc = useQueryClient();
   const cancelMutation = useCancelOrder({
     mutation: {
@@ -355,7 +357,7 @@ function ActiveBlotter() {
                     className="px-4 py-3 text-xs font-mono"
                     style={{ color: "var(--color-text-tertiary)" }}
                   >
-                    {formatRelativeTime(o.submittedAt ?? o.createdAt)}
+                    {formatInTz(o.submittedAt ?? o.createdAt, "MMM dd HH:mm:ss", timezone)}
                   </td>
                   <td
                     className="px-4 py-3 font-mono text-xs"
@@ -397,6 +399,7 @@ function ActiveBlotter() {
 
 function ClosedBlotter() {
   const { data, isLoading } = useLiveOrders({ status: "closed", limit: 200 });
+  const { timezone } = useTimezone();
   const orders = data?.orders ?? [];
 
   return (
@@ -514,13 +517,13 @@ function ClosedBlotter() {
                   className="px-4 py-3 text-xs font-mono"
                   style={{ color: "var(--color-text-tertiary)" }}
                 >
-                  {formatRelativeTime(o.submittedAt ?? o.createdAt)}
+                  {formatInTz(o.submittedAt ?? o.createdAt, "MMM dd HH:mm:ss", timezone)}
                 </td>
                 <td
                   className="px-4 py-3 text-xs font-mono"
                   style={{ color: "var(--color-text-tertiary)" }}
                 >
-                  {formatRelativeTime(closedAt(o))}
+                  {formatInTz(closedAt(o), "MMM dd HH:mm:ss", timezone)}
                 </td>
                 <td
                   className="px-4 py-3 text-xs font-mono max-w-[200px] truncate"
@@ -542,6 +545,7 @@ function ClosedBlotter() {
 
 function PositionsBlotter() {
   const { data, isLoading } = useLivePositions();
+  const { timezone } = useTimezone();
   const positions = data?.positions ?? [];
 
   return (
@@ -681,7 +685,7 @@ function PositionsBlotter() {
                     className="px-4 py-3 text-xs font-mono"
                     style={{ color: "var(--color-text-tertiary)" }}
                   >
-                    {formatRelativeTime(p.lastUpdated)}
+                    {formatInTz(p.lastUpdated, "MMM dd HH:mm:ss", timezone)}
                   </td>
                 </tr>
               );
