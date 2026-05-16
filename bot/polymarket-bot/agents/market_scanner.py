@@ -130,7 +130,7 @@ def _extract_markets_from_events(events):
         for m in (event.get("markets") or []):
             m["_event_title"] = event.get("title")
             m["_event_slug"]  = event.get("slug")
-            m["_neg_risk"]    = event.get("negRisk", False)
+            m["_neg_risk"]    = bool(m.get("negRisk", False) or event.get("negRisk", False))
             m["_tags"]        = [t.get("label", "").lower() for t in (event.get("tags") or [])]
             results.append(m)
     return results
