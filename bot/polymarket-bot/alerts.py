@@ -148,3 +148,37 @@ def cancel_all_fired(summary: dict) -> None:
         f"Failed: {summary['failed']} | "
         f"DB-only: {summary['db_only']}"
     )
+
+
+def reconciler_orphans(orphan_ids: list[str]) -> None:
+    """
+    Alert when the order reconciler finds CLOB orders the bot did not create.
+    Usually means a manual order, a leftover from a prior deployment, or — in
+    the worst case — a signature replay. Operator must investigate.
+    """
+    if not orphan_ids:
+        return
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    shown = ", ".join(f"`{oid[:12]}…`" for oid in orphan_ids[:5])
+    extra = f" (+{len(orphan_ids) - 5} more)" if len(orphan_ids) > 5 else ""
+    _send(
+        f":warning: **Orphan CLOB orders detected** | {ts}\n"
+        f"{len(orphan_ids)} order(s) on Polymarket are not tracked by the bot: "
+        f"{shown}{extra}\n"
+        f"Investigate before next cancel-all."
+    )
+
+
+def position_drift(drift_summary: dict) -> None:
+    """
+    Alert when the position reconciler finds non-trivial drift between the
+    DB positions table and the actual Polymarket wallet balance.
+    """
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    _send(
+        f":warning: **Position drift detected** | {ts}\n"
+        f"DB rows: {drift_summary.get('db_rows', '?')} | "
+        f"Wallet positions: {drift_summary.get('wallet_rows', '?')} | "
+        f"Drift markets: {drift_summary.get('drift_markets', '?')}\n"
+        f"Check `/health` and run reconciliation manually."
+    )

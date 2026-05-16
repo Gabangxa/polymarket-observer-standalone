@@ -24,7 +24,7 @@ from config import (
     EXECUTOR_POLL_SECS,
     MAX_SIGNAL_AGE_SECS,
 )
-from execution import pre_trade_gate, order_manager, exit_manager, connection_checker
+from execution import pre_trade_gate, order_manager, exit_manager, connection_checker, reconciler
 from execution.auth import get_client
 
 logger = logging.getLogger(__name__)
@@ -219,7 +219,8 @@ def run_executor() -> None:
 
     client  = None
     _cycle  = 0
-    _CHECK_EVERY = 30   # run connection check on cycle 1 then every ~5 min (30 × 10s)
+    _CHECK_EVERY      = 30   # run connection check on cycle 1 then every ~5 min (30 × 10s)
+    _RECONCILE_EVERY  = 30   # same cadence — DB↔CLOB order state sync
 
     while True:
         placed   = 0
@@ -235,6 +236,16 @@ def run_executor() -> None:
                     connection_checker.run_check(client)
                 except Exception as _ce:
                     logger.warning(f"Connection check error: {_ce}")
+
+            # Periodic order-state reconciliation. Catches DB rows stuck in
+            # OPEN/SENT/PENDING_SUBMISSION whose CLOB-side state has drifted
+            # (filled, canceled, or expired) and the per-cycle poll missed.
+            # Also detects orphan CLOB orders (alert only).
+            if _cycle == 1 or _cycle % _RECONCILE_EVERY == 0:
+                try:
+                    reconciler.reconcile_orders(client)
+                except Exception as _re:
+                    logger.warning(f"Reconciler error: {_re}")
 
             # Sync pause flag from DB so UI toggle takes effect within one cycle
             try:
