@@ -186,11 +186,9 @@ def _place_neg_risk_legs(signal: dict, client) -> dict:
             )
 
             def _submit():
-                return client.create_and_post_order(
-                    order_args,
-                    order_type=OrderType.GTD,
-                    expiration=expiration,
-                )
+                order_args.expiration = str(expiration)
+                signed = client.create_order(order_args)
+                return client.post_order(signed, OrderType.GTD)
 
             db.update_order_status(clord_id, "SENT", submitted_at=datetime.now(timezone.utc))
             response          = _backoff_retry(_submit)
@@ -308,11 +306,9 @@ def _place_neg_risk_maker_legs(signal: dict, client) -> dict:
             )
 
             def _submit():
-                return client.create_and_post_order(
-                    order_args,
-                    order_type=OrderType.GTD,
-                    expiration=expiration,
-                )
+                order_args.expiration = str(expiration)
+                signed = client.create_order(order_args)
+                return client.post_order(signed, OrderType.GTD)
 
             db.update_order_status(clord_id, "SENT", submitted_at=datetime.now(timezone.utc))
             response          = _backoff_retry(_submit)
@@ -436,11 +432,9 @@ def place_order(signal: dict, client, reprice_of: int = None) -> dict:
         )
 
         def _submit():
-            return client.create_and_post_order(
-                order_args,
-                order_type=OrderType.GTD,
-                expiration=expiration,
-            )
+            order_args.expiration = str(expiration)
+            signed = client.create_order(order_args)
+            return client.post_order(signed, OrderType.GTD)
 
         db.update_order_status(clord_id, "SENT", submitted_at=datetime.now(timezone.utc))
         response = _backoff_retry(_submit)
@@ -684,11 +678,9 @@ def place_exit_order(position: dict, price: float, client) -> dict:
         )
 
         def _submit():
-            return client.create_and_post_order(
-                order_args,
-                order_type=OrderType.GTD,
-                expiration=expiration,
-            )
+            order_args.expiration = str(expiration)
+            signed = client.create_order(order_args)
+            return client.post_order(signed, OrderType.GTD)
 
         db.update_order_status(clord_id, "SENT", submitted_at=datetime.now(timezone.utc))
         response = _backoff_retry(_submit)

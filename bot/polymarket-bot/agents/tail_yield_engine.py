@@ -59,7 +59,7 @@ def run():
             "event_slug":      snap.get("event_slug"),
             "signal_score":    round(score, 4),
             "hours_remaining": round(hours_to_close, 2),
-            "current_price":   yes_price,
+            "yes_price":       yes_price,
             "yield_percentage": round(yield_pct, 4),
             "trigger": (
                 f"YES at {yes_price:.4f} with {hours_to_close:.1f}h to close — "
