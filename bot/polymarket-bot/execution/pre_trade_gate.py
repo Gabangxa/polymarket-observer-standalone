@@ -14,8 +14,6 @@ from decimal import Decimal
 import db
 from config import (
     EXECUTION_STRATEGIES,
-    MAX_PORTFOLIO_PCT,
-    MAX_POSITION_PCT,
     MAX_SIGNAL_AGE_SECS,
 )
 
@@ -101,20 +99,22 @@ def check_reprice(signal: dict) -> tuple[bool, str]:
 
 def _check_portfolio_exposure(bankroll: float) -> tuple[bool, str]:
     """Total USDC committed across all open and filled-but-held orders."""
-    cap = Decimal(str(MAX_PORTFOLIO_PCT)) * Decimal(str(bankroll))
+    pct = db.get_max_portfolio_pct()
+    cap = Decimal(str(pct)) * Decimal(str(bankroll))
     total = Decimal(str(db.get_total_open_exposure()))
     if total >= cap:
         return False, (
             f"portfolio exposure {total:.2f} USDC >= "
             f"cap {cap:.2f} USDC "
-            f"({MAX_PORTFOLIO_PCT*100:.0f}% of {bankroll} bankroll)"
+            f"({pct*100:.0f}% of {bankroll} bankroll)"
         )
     return True, ""
 
 
 def _check_position_exposure(market_id: str, token_id: str, bankroll: float) -> tuple[bool, str]:
-    """Per-position cap: filled + working must be below MAX_POSITION_PCT × BANKROLL."""
-    cap = Decimal(str(MAX_POSITION_PCT)) * Decimal(str(bankroll))
+    """Per-position cap: filled + working must be below max_position_pct × BANKROLL."""
+    pct = db.get_max_position_pct()
+    cap = Decimal(str(pct)) * Decimal(str(bankroll))
     position = db.get_position(market_id, token_id, "YES")
     if position:
         total_exposure = (
@@ -125,6 +125,6 @@ def _check_position_exposure(market_id: str, token_id: str, bankroll: float) -> 
             return False, (
                 f"position exposure {total_exposure:.2f} USDC >= "
                 f"per-position cap {cap:.2f} USDC "
-                f"({MAX_POSITION_PCT*100:.0f}% of {bankroll} bankroll)"
+                f"({pct*100:.0f}% of {bankroll} bankroll)"
             )
     return True, ""

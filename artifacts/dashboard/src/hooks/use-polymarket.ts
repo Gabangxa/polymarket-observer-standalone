@@ -185,6 +185,50 @@ export function useSetBankroll() {
   });
 }
 
+export function useRiskConfig() {
+  return useQuery<{ positionPct: number; portfolioPct: number }>({
+    queryKey: ["config", "risk"],
+    queryFn: async () => {
+      const res = await fetch("/api/config/risk");
+      if (!res.ok) throw new Error("Failed to fetch risk config");
+      return res.json();
+    },
+    refetchInterval: POLLING_INTERVAL,
+  });
+}
+
+export function useSetPositionPct() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (pct: number) => {
+      const res = await fetch("/api/config/position-pct", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pct }),
+      });
+      if (!res.ok) throw new Error("Failed to save position cap");
+      return res.json() as Promise<{ positionPct: number }>;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["config", "risk"] }),
+  });
+}
+
+export function useSetPortfolioPct() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (pct: number) => {
+      const res = await fetch("/api/config/portfolio-pct", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pct }),
+      });
+      if (!res.ok) throw new Error("Failed to save portfolio cap");
+      return res.json() as Promise<{ portfolioPct: number }>;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["config", "risk"] }),
+  });
+}
+
 export type ConnectionStatus = {
   clobReachable: boolean;
   walletAuthenticated: boolean;

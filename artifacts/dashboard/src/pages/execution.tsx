@@ -30,6 +30,9 @@ import {
   useCancelOrder,
   useCancelAllOrders,
   useSetBankroll,
+  useRiskConfig,
+  useSetPositionPct,
+  useSetPortfolioPct,
   useSubmitSignal,
   useMarketSignals,
   useExecutorStatus,
@@ -1289,6 +1292,16 @@ export default function Execution() {
   const [bankrollInput, setBankrollInput] = useState("");
   const bankrollInputRef = useRef<HTMLInputElement>(null);
 
+  const { data: riskConfig } = useRiskConfig();
+  const setPositionPct  = useSetPositionPct();
+  const setPortfolioPct = useSetPortfolioPct();
+  const [editingPosPct,  setEditingPosPct]  = useState(false);
+  const [editingPortPct, setEditingPortPct] = useState(false);
+  const [posPctInput,  setPosPctInput]  = useState("");
+  const [portPctInput, setPortPctInput] = useState("");
+  const posPctRef  = useRef<HTMLInputElement>(null);
+  const portPctRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     if (editingBankroll) {
       setBankrollInput(String(parseNumeric(portfolio?.bankroll)));
@@ -1296,6 +1309,22 @@ export default function Execution() {
       bankrollInputRef.current?.select();
     }
   }, [editingBankroll, portfolio?.bankroll]);
+
+  useEffect(() => {
+    if (editingPosPct) {
+      setPosPctInput(String(Math.round((riskConfig?.positionPct ?? 0.10) * 100)));
+      posPctRef.current?.focus();
+      posPctRef.current?.select();
+    }
+  }, [editingPosPct, riskConfig?.positionPct]);
+
+  useEffect(() => {
+    if (editingPortPct) {
+      setPortPctInput(String(Math.round((riskConfig?.portfolioPct ?? 0.33) * 100)));
+      portPctRef.current?.focus();
+      portPctRef.current?.select();
+    }
+  }, [editingPortPct, riskConfig?.portfolioPct]);
 
   const cancelAllMutation = useCancelAllOrders({
     mutation: {
@@ -1487,6 +1516,146 @@ export default function Execution() {
             </div>
           </div>
         </div>
+        {/* ── Per-position cap ── */}
+        <div
+          className="terminal-panel flex items-center gap-4 px-5 py-4"
+          style={{ minWidth: 160 }}
+        >
+          <div
+            className="w-9 h-9 rounded-sm flex items-center justify-center shrink-0"
+            style={{
+              background: "color-mix(in srgb, var(--color-accent-warning, #f59e0b) 10%, transparent)",
+              border: "1px solid color-mix(in srgb, var(--color-accent-warning, #f59e0b) 20%, transparent)",
+            }}
+          >
+            <TrendingUp className="w-4 h-4" style={{ color: "var(--color-accent-warning, #f59e0b)" }} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-xs font-mono flex items-center gap-2" style={{ color: "var(--color-text-tertiary)" }}>
+              Per-position cap
+              <button
+                onClick={() => setEditingPosPct(true)}
+                className="opacity-50 hover:opacity-100 transition-opacity"
+                title="Edit per-position cap"
+              >
+                <Pencil className="w-3 h-3" />
+              </button>
+            </div>
+            {editingPosPct ? (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const val = parseFloat(posPctInput) / 100;
+                  if (!isNaN(val) && val > 0 && val <= 1) {
+                    setPositionPct.mutate(val, { onSettled: () => setEditingPosPct(false) });
+                  }
+                }}
+                className="flex items-center gap-1 mt-0.5"
+              >
+                <input
+                  ref={posPctRef}
+                  type="number"
+                  min="1"
+                  max="100"
+                  step="1"
+                  value={posPctInput}
+                  onChange={(e) => setPosPctInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Escape" && setEditingPosPct(false)}
+                  className="w-20 text-lg font-bold font-mono bg-transparent border-b outline-none"
+                  style={{ color: "var(--color-text-primary)", borderColor: "var(--color-accent-warning, #f59e0b)" }}
+                />
+                <span className="text-lg font-bold font-mono" style={{ color: "var(--color-text-primary)" }}>%</span>
+                <button
+                  type="submit"
+                  disabled={setPositionPct.isPending}
+                  className="text-xs font-mono px-2 py-0.5 rounded-sm"
+                  style={{ color: "var(--color-accent-warning, #f59e0b)", background: "color-mix(in srgb, var(--color-accent-warning, #f59e0b) 15%, transparent)", border: "1px solid var(--color-accent-warning, #f59e0b)" }}
+                >
+                  {setPositionPct.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : "Save"}
+                </button>
+                <button type="button" onClick={() => setEditingPosPct(false)} className="text-xs font-mono px-2 py-0.5 rounded-sm" style={{ color: "var(--color-text-tertiary)" }}>✕</button>
+              </form>
+            ) : (
+              <div className="text-lg font-bold font-mono" style={{ color: "var(--color-text-primary)" }}>
+                {Math.round((riskConfig?.positionPct ?? 0.10) * 100)}%
+              </div>
+            )}
+            <div className="text-[10px] font-mono" style={{ color: "var(--color-text-tertiary)" }}>
+              max per market · ${((riskConfig?.positionPct ?? 0.10) * parseNumeric(portfolio?.bankroll)).toFixed(2)} USDC
+            </div>
+          </div>
+        </div>
+
+        {/* ── Portfolio cap ── */}
+        <div
+          className="terminal-panel flex items-center gap-4 px-5 py-4"
+          style={{ minWidth: 160 }}
+        >
+          <div
+            className="w-9 h-9 rounded-sm flex items-center justify-center shrink-0"
+            style={{
+              background: "color-mix(in srgb, var(--color-accent-warning, #f59e0b) 10%, transparent)",
+              border: "1px solid color-mix(in srgb, var(--color-accent-warning, #f59e0b) 20%, transparent)",
+            }}
+          >
+            <Wallet className="w-4 h-4" style={{ color: "var(--color-accent-warning, #f59e0b)" }} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-xs font-mono flex items-center gap-2" style={{ color: "var(--color-text-tertiary)" }}>
+              Portfolio cap
+              <button
+                onClick={() => setEditingPortPct(true)}
+                className="opacity-50 hover:opacity-100 transition-opacity"
+                title="Edit portfolio cap"
+              >
+                <Pencil className="w-3 h-3" />
+              </button>
+            </div>
+            {editingPortPct ? (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const val = parseFloat(portPctInput) / 100;
+                  if (!isNaN(val) && val > 0 && val <= 1) {
+                    setPortfolioPct.mutate(val, { onSettled: () => setEditingPortPct(false) });
+                  }
+                }}
+                className="flex items-center gap-1 mt-0.5"
+              >
+                <input
+                  ref={portPctRef}
+                  type="number"
+                  min="1"
+                  max="100"
+                  step="1"
+                  value={portPctInput}
+                  onChange={(e) => setPortPctInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Escape" && setEditingPortPct(false)}
+                  className="w-20 text-lg font-bold font-mono bg-transparent border-b outline-none"
+                  style={{ color: "var(--color-text-primary)", borderColor: "var(--color-accent-warning, #f59e0b)" }}
+                />
+                <span className="text-lg font-bold font-mono" style={{ color: "var(--color-text-primary)" }}>%</span>
+                <button
+                  type="submit"
+                  disabled={setPortfolioPct.isPending}
+                  className="text-xs font-mono px-2 py-0.5 rounded-sm"
+                  style={{ color: "var(--color-accent-warning, #f59e0b)", background: "color-mix(in srgb, var(--color-accent-warning, #f59e0b) 15%, transparent)", border: "1px solid var(--color-accent-warning, #f59e0b)" }}
+                >
+                  {setPortfolioPct.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : "Save"}
+                </button>
+                <button type="button" onClick={() => setEditingPortPct(false)} className="text-xs font-mono px-2 py-0.5 rounded-sm" style={{ color: "var(--color-text-tertiary)" }}>✕</button>
+              </form>
+            ) : (
+              <div className="text-lg font-bold font-mono" style={{ color: "var(--color-text-primary)" }}>
+                {Math.round((riskConfig?.portfolioPct ?? 0.33) * 100)}%
+              </div>
+            )}
+            <div className="text-[10px] font-mono" style={{ color: "var(--color-text-tertiary)" }}>
+              max total deployed · ${((riskConfig?.portfolioPct ?? 0.33) * parseNumeric(portfolio?.bankroll)).toFixed(2)} USDC
+            </div>
+          </div>
+        </div>
+
         <StatCard
           icon={<Wallet className="w-4 h-4" />}
           label="USDC at Risk"

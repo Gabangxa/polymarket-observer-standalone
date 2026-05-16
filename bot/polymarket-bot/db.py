@@ -1229,3 +1229,31 @@ def get_bankroll() -> float:
             pass
     env_val = float(os.environ.get("BANKROLL_USDC", "0.0") or "0.0")
     return env_val if env_val > 0 else 0.0
+
+
+def get_max_position_pct() -> float:
+    """Max fraction of bankroll per single position. Falls back to MAX_POSITION_PCT env/config."""
+    from config import MAX_POSITION_PCT
+    raw = get_config("max_position_pct")
+    if raw is not None:
+        try:
+            val = float(raw)
+            if 0 < val <= 1:
+                return val
+        except (ValueError, TypeError):
+            pass
+    return MAX_POSITION_PCT
+
+
+def get_max_portfolio_pct() -> float:
+    """Max fraction of bankroll deployed across all open positions. Falls back to MAX_PORTFOLIO_PCT."""
+    from config import MAX_PORTFOLIO_PCT
+    raw = get_config("max_portfolio_pct")
+    if raw is not None:
+        try:
+            val = float(raw)
+            if 0 < val <= 1:
+                return val
+        except (ValueError, TypeError):
+            pass
+    return MAX_PORTFOLIO_PCT
