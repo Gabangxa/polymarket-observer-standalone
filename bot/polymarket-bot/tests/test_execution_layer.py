@@ -151,10 +151,11 @@ class TestSizeRecommendation:
 
 _NOW = datetime.now(timezone.utc)
 
-# Module-level constants used when patching the gate with a live bankroll
-_TEST_BANKROLL    = 1000.0
-_MAX_PORTFOLIO    = Decimal("330.00")   # MAX_PORTFOLIO_PCT (0.33) × 1000
-_MAX_POSITION     = Decimal("100.00")  # MAX_POSITION_PCT  (0.10) × 1000
+# Live-bankroll defaults. The gate computes caps dynamically from the
+# db.get_bankroll / db.get_max_*_pct helpers — the test fixture patches those.
+_TEST_BANKROLL          = 1000.0
+_TEST_MAX_POSITION_PCT  = 0.10  # → cap 100 USDC
+_TEST_MAX_PORTFOLIO_PCT = 0.33  # → cap 330 USDC
 
 
 def _signal(
@@ -179,11 +180,17 @@ def _signal(
 
 
 def _live_bankroll():
-    """Patch context that sets a non-zero bankroll and the derived exposure caps."""
+    """
+    Patch context that simulates a configured bankroll + cap percentages by
+    intercepting the db helpers pre_trade_gate actually calls.
+    Returns three context managers so callers can use:
+        bl, mp, mx = _live_bankroll()
+        with bl, mp, mx, ...:
+    """
     return (
-        patch.object(ptg, "BANKROLL_USDC",              _TEST_BANKROLL),
-        patch.object(ptg, "_MAX_PORTFOLIO_EXPOSURE",    _MAX_PORTFOLIO),
-        patch.object(ptg, "_MAX_EXPOSURE_PER_POSITION", _MAX_POSITION),
+        patch.object(ptg.db, "get_bankroll",         return_value=_TEST_BANKROLL),
+        patch.object(ptg.db, "get_max_portfolio_pct", return_value=_TEST_MAX_PORTFOLIO_PCT),
+        patch.object(ptg.db, "get_max_position_pct",  return_value=_TEST_MAX_POSITION_PCT),
     )
 
 
@@ -196,10 +203,10 @@ class TestPreTradeGateCheck:
         assert "allowlist" in reason
 
     def test_zero_bankroll_rejected(self):
-        with patch.object(ptg, "BANKROLL_USDC", 0.0):
+        with patch.object(ptg.db, "get_bankroll", return_value=0.0):
             ok, reason = ptg.check(_signal())
         assert not ok
-        assert "BANKROLL_USDC" in reason
+        assert "ankroll" in reason  # "Bankroll is not set or zero — …"
 
     def test_stale_signal_rejected(self):
         # MAX_SIGNAL_AGE_SECS = 60; 120s old is stale
@@ -303,10 +310,10 @@ class TestPreTradeGateCheck:
 
 class TestPreTradeGateCheckReprice:
     def test_zero_bankroll_rejected(self):
-        with patch.object(ptg, "BANKROLL_USDC", 0.0):
+        with patch.object(ptg.db, "get_bankroll", return_value=0.0):
             ok, reason = ptg.check_reprice(_signal())
         assert not ok
-        assert "BANKROLL_USDC" in reason
+        assert "ankroll" in reason  # "Bankroll is not set or zero — …"
 
     def test_portfolio_cap_exceeded_rejected(self):
         bl, mp, mx = _live_bankroll()
