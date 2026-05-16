@@ -30,6 +30,7 @@ def _analyse_snapshot(snapshot):
     spread    = snapshot.get("spread")
     midpoint  = snapshot.get("midpoint")
     yes_price = snapshot.get("yes_price")
+    yes_ask   = snapshot.get("yes_ask")
     tags      = snapshot.get("tags") or []
     fee_bps   = float(snapshot.get("fee_rate_bps") or 0)
 
@@ -59,6 +60,7 @@ def _analyse_snapshot(snapshot):
             "tags":           tags,
             "neg_risk":       neg_risk,
             "yes_price":      round(float(yes_price), 4),
+            "yes_ask":        round(float(yes_ask), 4) if yes_ask is not None else None,
             "spread":         round(spread_f, 4),
             "fee_round_trip": 0.0,
             "net_spread":     round(spread_f, 4),
@@ -93,6 +95,7 @@ def _analyse_snapshot(snapshot):
         "tags":           tags,
         "neg_risk":       neg_risk,
         "yes_price":      round(float(yes_price), 4),
+        "yes_ask":        round(float(yes_ask), 4) if yes_ask is not None else None,
         "spread":         round(spread_f, 4),
         "fee_round_trip": round(fee_rt, 6),
         "net_spread":     round(net_spread, 4),
