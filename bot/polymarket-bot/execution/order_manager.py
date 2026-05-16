@@ -21,8 +21,9 @@ _BACKOFF_BASE   = 1.0
 _BACKOFF_CAP    = 30.0
 _GTD_BUFFER_SECS = 60   # Polymarket enforces: expiration must be > now + 60s
 
-# Minimum order size enforced by Polymarket (in USDC)
-_MIN_ORDER_USDC = Decimal("5.0")
+# Minimum order the CLOB will accept (in USDC). Orders sized below this are
+# rejected rather than bumped up — bumping would silently violate the position cap.
+_MIN_ORDER_USDC = Decimal("1.0")
 
 
 def _gtd_expiration(strategy: str) -> int:
@@ -68,24 +69,36 @@ def _backoff_retry(fn, max_retries: int = ORDER_MAX_RETRIES):
 
 def _size_from_signal(signal: dict, side: str) -> Decimal:
     """
-    Extract Kelly-sized USDC amount from signal metadata.
-    Falls back to MIN_ORDER_USDC if metadata is absent or invalid.
+    Compute USDC order size from signal metadata.
+
+    Priority:
+      1. Kelly fraction from metadata, capped at MAX_POSITION_PCT * bankroll.
+      2. No Kelly → default to MAX_POSITION_PCT * bankroll (the full cap).
+
+    Returns 0 if the computed size is below _MIN_ORDER_USDC so the caller
+    rejects the order cleanly rather than silently exceeding the position cap.
     """
     import db as _db
     from config import MAX_POSITION_PCT
     bankroll = _db.get_bankroll()
     metadata = signal.get("metadata") or {}
     kelly_fraction = metadata.get("kelly_fraction")
+    cap = (Decimal(str(bankroll)) * Decimal(str(MAX_POSITION_PCT))).quantize(
+        Decimal("0.01"), rounding=ROUND_DOWN
+    )
 
     if kelly_fraction and float(kelly_fraction) > 0:
-        raw = Decimal(str(bankroll)) * Decimal(str(kelly_fraction))
-        cap = Decimal(str(bankroll)) * Decimal(str(MAX_POSITION_PCT))
+        raw  = Decimal(str(bankroll)) * Decimal(str(kelly_fraction))
         size = min(raw, cap).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
     else:
-        size = _MIN_ORDER_USDC
+        size = cap
 
     if size < _MIN_ORDER_USDC:
-        size = _MIN_ORDER_USDC
+        logger.warning(
+            f"Computed size ${size} is below minimum ${_MIN_ORDER_USDC} "
+            f"(bankroll=${bankroll}, cap={MAX_POSITION_PCT*100:.0f}%) — order skipped"
+        )
+        return Decimal("0")
 
     return size
 
