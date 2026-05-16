@@ -38,14 +38,16 @@ def main():
     from server import start_server
     from main import run_pipeline
 
-    from config import EXECUTION_STRATEGIES, EXECUTION_MIN_SCORE, BANKROLL_USDC
+    from config import EXECUTION_STRATEGIES, EXECUTION_MIN_SCORE
+    import db as _db
+    bankroll = _db.get_bankroll()
     logger.info("=" * 60)
     logger.info("polymarket-bot starting up")
     logger.info(f"Poll interval    : {POLL_INTERVAL_SECONDS}s")
     logger.info(f"Scan interval    : every {SCAN_INTERVAL_RUNS} runs")
     logger.info(f"Active strategies: {EXECUTION_STRATEGIES or '(none — execution disabled)'}")
     logger.info(f"Min score        : {EXECUTION_MIN_SCORE}")
-    logger.info(f"Bankroll USDC    : {BANKROLL_USDC if BANKROLL_USDC > 0 else '(not set — orders blocked)'}")
+    logger.info(f"Bankroll USDC    : {bankroll if bankroll > 0 else '(not set — orders blocked)'}")
     logger.info("=" * 60)
 
     # On Railway each service gets its own PORT — bind to it so health checks
@@ -55,16 +57,15 @@ def main():
 
     # Start execution layer — polls signals table and places CLOB orders.
     # Gate: POLYGON_PRIVATE_KEY must be set in Railway service variables.
-    # BANKROLL_USDC is set in config.py — update it there before deploying.
-    from config import BANKROLL_USDC
+    # Bankroll is managed via the dashboard UI (stored in bot_config.bankroll_usdc).
     executor_thread = None
     if os.environ.get("POLYGON_PRIVATE_KEY"):
         from execution.executor import start_executor
         executor_thread = start_executor()
-        if BANKROLL_USDC <= 0:
+        if bankroll <= 0:
             logger.warning(
-                "Executor started but BANKROLL_USDC env var is 0 or unset — "
-                "all orders will be rejected at pre-trade gate until it is set."
+                "Executor started but bankroll is 0 — "
+                "set it in the dashboard Execution Console before placing orders."
             )
     else:
         logger.warning(
