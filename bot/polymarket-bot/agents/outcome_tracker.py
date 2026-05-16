@@ -95,7 +95,15 @@ def run():
     snapshots_by_market = {s["market_id"]: s for s in latest_snapshots}
 
     resolved_total = 0
-    skipped_total  = 0
+    # Per-reason skip counters. A growing backlog with all skips in one bucket
+    # tells you exactly which assumption is broken (snapshot gap vs. leg-data gap vs. exception).
+    skip_reasons: dict[str, int] = {
+        "no_market_id":      0,
+        "no_snapshot":       0,
+        "no_leg_prices":     0,   # neg_risk: outcome legs missing from snapshots_by_market
+        "unknown_strategy":  0,
+        "exception":         0,
+    }
 
     for strategy, window_hours in RESOLUTION_WINDOWS.items():
         signals = db.get_unresolved_signals(strategy=strategy, older_than_hours=window_hours)
@@ -109,8 +117,11 @@ def run():
                 market_id = signal.get("market_id")
 
                 if strategy in ("spread_engine", "spread_harvesting"):
-                    if not market_id or market_id not in snapshots_by_market:
-                        skipped_total += 1
+                    if not market_id:
+                        skip_reasons["no_market_id"] += 1
+                        continue
+                    if market_id not in snapshots_by_market:
+                        skip_reasons["no_snapshot"] += 1
                         continue
                     outcome, exit_price, pnl = _resolve_spread(
                         signal, snapshots_by_market[market_id]
@@ -121,19 +132,22 @@ def run():
                         signal, snapshots_by_market
                     )
                     if outcome is None:
-                        skipped_total += 1
+                        skip_reasons["no_leg_prices"] += 1
                         continue
 
                 elif strategy == "tail_yield_engine":
-                    if not market_id or market_id not in snapshots_by_market:
-                        skipped_total += 1
+                    if not market_id:
+                        skip_reasons["no_market_id"] += 1
+                        continue
+                    if market_id not in snapshots_by_market:
+                        skip_reasons["no_snapshot"] += 1
                         continue
                     outcome, exit_price, pnl = _resolve_tail_yield(
                         signal, snapshots_by_market[market_id]
                     )
 
                 else:
-                    skipped_total += 1
+                    skip_reasons["unknown_strategy"] += 1
                     continue
 
                 db.update_signal_outcome(signal["id"], exit_price, pnl, outcome)
@@ -146,13 +160,17 @@ def run():
 
             except Exception as e:
                 logger.warning(f"    Failed to resolve signal {signal['id']}: {e}")
-                skipped_total += 1
+                skip_reasons["exception"] += 1
 
+    skipped_total = sum(skip_reasons.values())
+    skip_breakdown = ", ".join(f"{k}={v}" for k, v in skip_reasons.items() if v > 0) or "none"
     logger.info(
-        f"Outcome tracker done — resolved: {resolved_total}, skipped: {skipped_total}"
+        f"Outcome tracker done — resolved: {resolved_total}, "
+        f"skipped: {skipped_total} ({skip_breakdown})"
     )
     return {
-        "agent":    "outcome_tracker",
-        "resolved": resolved_total,
-        "skipped":  skipped_total,
+        "agent":         "outcome_tracker",
+        "resolved":      resolved_total,
+        "skipped":       skipped_total,
+        "skip_reasons":  skip_reasons,
     }
