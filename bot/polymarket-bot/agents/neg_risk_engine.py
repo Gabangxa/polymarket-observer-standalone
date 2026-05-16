@@ -14,25 +14,42 @@ def _analyse_event(event_slug, snapshots):
     if len(snapshots) < NEG_RISK_MIN_OUTCOMES:
         return None
 
-    # Build per-outcome records. yes_ask is used for the TAKER check (you pay ask to buy YES).
-    # Fall back to yes_price (midpoint) when ask is unavailable.
+    # Build per-outcome records. Both ask and midpoint must be present and positive —
+    # synthesizing missing legs from partial data produces fictional arbitrages.
+    # A single missing leg invalidates the entire event sum.
     records = []
+    missing_ask = 0
+    missing_mid = 0
     for s in snapshots:
         midpoint = s.get("yes_price")
         ask      = s.get("yes_ask")
         if midpoint is None or float(midpoint) <= 0:
+            missing_mid += 1
+            continue
+        if ask is None or float(ask) <= 0:
+            missing_ask += 1
             continue
         token_ids = s.get("token_ids") or []
         records.append({
             "question":     s.get("question", "?"),
             "market_id":    s.get("market_id"),
             "midpoint":     float(midpoint),
-            "ask":          float(ask) if ask is not None else float(midpoint),
+            "ask":          float(ask),
             "no_price":     float(s["no_price"]) if s.get("no_price") is not None else round(1.0 - float(midpoint), 6),
             "no_ask":       float(s["no_ask"])   if s.get("no_ask")   is not None else None,
             "yes_token_id": token_ids[0] if len(token_ids) > 0 else None,
             "no_token_id":  token_ids[1] if len(token_ids) > 1 else None,
         })
+
+    # Data-integrity gate: every outcome leg must have complete pricing.
+    # Otherwise the sum is partial and produces phantom arbitrage signals.
+    if missing_ask > 0 or missing_mid > 0 or len(records) != len(snapshots):
+        logger.info(
+            f"  Skipped {event_slug}: incomplete leg pricing "
+            f"(missing_ask={missing_ask}, missing_mid={missing_mid}, "
+            f"{len(records)}/{len(snapshots)} legs valid)"
+        )
+        return None
 
     if len(records) < NEG_RISK_MIN_OUTCOMES:
         return None
@@ -46,6 +63,16 @@ def _analyse_event(event_slug, snapshots):
     is_maker_arb = sum_mids > NEG_RISK_MAKER_THRESHOLD
 
     if not is_taker_arb and not is_maker_arb:
+        return None
+
+    # Sanity floor: a credible neg-risk event has sum > 1 - max_overround_seen_in_wild.
+    # A sum < 0.80 across N outcomes that each pay $1 implies stale or missing data
+    # masquerading as arbitrage. Reject these defensively.
+    if is_taker_arb and sum_asks < 0.80:
+        logger.warning(
+            f"  Skipped {event_slug}: sum_asks={sum_asks:.4f} below sanity floor 0.80 — "
+            f"likely stale/missing orderbook data, not real arbitrage"
+        )
         return None
 
     n = len(records)
