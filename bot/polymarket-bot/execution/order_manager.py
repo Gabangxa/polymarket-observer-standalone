@@ -183,6 +183,7 @@ def _place_neg_risk_legs(signal: dict, client) -> dict:
                 price=float(price),
                 size=float(size_shares),
                 side="BUY",
+                neg_risk=True,
             )
 
             def _submit():
@@ -303,6 +304,7 @@ def _place_neg_risk_maker_legs(signal: dict, client) -> dict:
                 price=float(price),
                 size=float(size_shares),
                 side="SELL",
+                neg_risk=True,
             )
 
             def _submit():
@@ -429,6 +431,7 @@ def place_order(signal: dict, client, reprice_of: int = None) -> dict:
             price=float(price),
             size=float(size_shares),
             side="BUY",
+            neg_risk=bool(signal.get("neg_risk", False)),
         )
 
         def _submit():
@@ -675,6 +678,7 @@ def place_exit_order(position: dict, price: float, client) -> dict:
             price=float(price_d),
             size=float(size_shares),
             side="SELL",
+            neg_risk=bool(position.get("neg_risk", False)),
         )
 
         def _submit():

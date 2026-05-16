@@ -871,7 +871,7 @@ def get_executable_signals(
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT s.*, m.token_ids, m.outcomes
+                SELECT s.*, m.token_ids, m.outcomes, m.neg_risk
                 FROM signals s
                 LEFT JOIN markets m ON m.market_id = s.market_id
                 WHERE s.executed = FALSE
@@ -1087,7 +1087,8 @@ def get_open_positions_with_strategy(market_id: str = None) -> list[dict]:
         SELECT
             p.*,
             COALESCE(o.strategy, '') AS strategy,
-            m.end_date
+            m.end_date,
+            m.neg_risk
         FROM positions p
         LEFT JOIN markets m ON m.market_id = p.market_id
         LEFT JOIN LATERAL (
