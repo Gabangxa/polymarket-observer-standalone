@@ -267,7 +267,10 @@ def _place_neg_risk_legs(signal: dict, client) -> dict:
         token_id    = token_ids[0]
         price       = Decimal(str(yes_ask)).quantize(_tick_dec(client, token_id), rounding=ROUND_DOWN)
         size_usdc   = _MIN_ORDER_USDC
-        size_shares = (size_usdc / price).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
+        # Polymarket CLOB enforces 2-decimal share precision regardless of tick size
+        # (py-clob-client ROUNDING_CONFIG: size=2 for every tick). Anything finer is
+        # silently rejected as "Invalid order inputs".
+        size_shares = (size_usdc / price).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
         expiration  = _gtd_expiration("neg_risk_overround")
         expiration_dt = datetime.fromtimestamp(expiration, tz=timezone.utc)
         clord_id    = _make_clord_id("negrisk", signal_id)
@@ -397,7 +400,7 @@ def _place_neg_risk_maker_legs(signal: dict, client) -> dict:
             continue
 
         size_usdc   = _MIN_ORDER_USDC
-        size_shares = (size_usdc / price).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
+        size_shares = (size_usdc / price).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
         expiration  = _gtd_expiration("neg_risk_overround")
         expiration_dt = datetime.fromtimestamp(expiration, tz=timezone.utc)
         clord_id    = _make_clord_id("negrsk_m", signal_id)
@@ -543,7 +546,9 @@ def place_order(signal: dict, client, reprice_of: int = None) -> dict:
         return {"ok": False, "clord_id": clord_id, "error": "computed size is zero"}
 
     # Compute share quantity once in Decimal to avoid float drift across all three uses below.
-    size_shares = (size_usdc / price).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
+    # 2-decimal precision is mandatory — py-clob-client ROUNDING_CONFIG uses size=2 for every
+    # tick size, and the CLOB rejects anything finer as "Invalid order inputs".
+    size_shares = (size_usdc / price).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
 
     expiration    = _gtd_expiration(strategy)
     expiration_dt = datetime.fromtimestamp(expiration, tz=timezone.utc)
@@ -797,7 +802,7 @@ def place_exit_order(position: dict, price: float, client) -> dict:
         return {"ok": False, "clord_id": None, "error": "zero net shares — nothing to exit"}
 
     price_d      = Decimal(str(price)).quantize(_tick_dec(client, token_id), rounding=ROUND_DOWN)
-    size_shares  = net_shares.quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
+    size_shares  = net_shares.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
     size_usdc    = (price_d * size_shares).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
 
     # Use signal_id=0 sentinel — exits have no originating signal
