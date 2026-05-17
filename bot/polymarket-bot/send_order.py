@@ -49,7 +49,7 @@ def _validate(args):
         errors.append("POLYGON_PRIVATE_KEY env var is not set")
     sig_type = int(os.environ.get("POLYMARKET_SIGNATURE_TYPE", "1"))
     funder   = os.environ.get("POLYMARKET_FUNDER", "")
-    if sig_type in (1, 3) and not funder:
+    if sig_type in (1, 2, 3) and not funder:
         errors.append(
             f"POLYMARKET_FUNDER is required when POLYMARKET_SIGNATURE_TYPE={sig_type}"
         )
