@@ -9,16 +9,22 @@
 # Required env vars:
 #   POLYGON_PRIVATE_KEY        — hex private key (with or without 0x prefix)
 #   POLYMARKET_CHAIN_ID        — 137 for Polygon mainnet (default), 80002 for Amoy testnet
-#   POLYMARKET_SIGNATURE_TYPE  — 0=EOA, 1=POLY_PROXY (default), 3=POLY_1271
-#   POLYMARKET_FUNDER          — proxy/deposit wallet address (required for types 1 and 3)
+#   POLYMARKET_SIGNATURE_TYPE  — 0=EOA, 1=POLY_PROXY (default), 2=POLY_GNOSIS_SAFE
+#   POLYMARKET_FUNDER          — proxy/safe address (required for types 1 and 2)
 #
-# Signature type guide:
-#   0 (EOA)        — direct MetaMask / hardware wallet, no proxy
-#   1 (POLY_PROXY) — Polymarket proxy wallet (anyone who signed up via the UI)
-#   3 (POLY_1271)  — new API deposit wallet (recommended for programmatic-only accounts)
+# Signature type guide (py-order-utils / py-clob-client only supports 0, 1, 2):
+#   0 (EOA)              — direct EOA signing; maker = signer = EOA; no smart wallet
+#   1 (POLY_PROXY)       — legacy Polymarket Proxy wallet (older accounts)
+#   2 (POLY_GNOSIS_SAFE) — EOA owns a Gnosis Safe; funds in the safe
 #
-# For types 1 and 3 the POLYMARKET_FUNDER address is the maker on every order.
-# It is the proxy/deposit wallet shown in your Polymarket account — not your EOA address.
+# Type 3 (POLY_1271 / Deposit Wallet) is what the polymarket.com UI uses for new
+# accounts. It is NOT supported by py-order-utils today. Setting sig_type=3 will cause
+# every order to fail client-side with ValidationException('Invalid order inputs')
+# inside py_order_utils.builders.order_builder._validate_inputs — the order is never
+# signed, never sent. See plans/quizzical-meandering-liskov.md for the trace.
+#
+# For types 1 and 2 the POLYMARKET_FUNDER address is the maker on every order.
+# It is the proxy/safe address — not your EOA address.
 
 import logging
 import os
@@ -64,10 +70,18 @@ def get_client():
                 "Add it to requirements.txt: py-clob-client>=0.17.0"
             ) from e
 
-        if SIG_TYPE in (1, 3) and not FUNDER:
+        if SIG_TYPE not in (0, 1, 2):
+            raise RuntimeError(
+                f"POLYMARKET_SIGNATURE_TYPE={SIG_TYPE} is not supported by py-order-utils. "
+                "Valid values: 0=EOA, 1=POLY_PROXY, 2=POLY_GNOSIS_SAFE. "
+                "Type 3 (POLY_1271 / Deposit Wallet) is JS-SDK only and silently rejects every "
+                "order as 'Invalid order inputs'. See plans/quizzical-meandering-liskov.md."
+            )
+
+        if SIG_TYPE in (1, 2) and not FUNDER:
             raise RuntimeError(
                 f"POLYMARKET_FUNDER env var is required when POLYMARKET_SIGNATURE_TYPE={SIG_TYPE}. "
-                "Set it to your Polymarket proxy/deposit wallet address in Railway service variables."
+                "Set it to your Polymarket proxy/safe address in Railway service variables."
             )
 
         logger.info(f"Initialising ClobClient (chain_id={CHAIN_ID}, sig_type={SIG_TYPE}, funder={FUNDER or 'EOA'})")
