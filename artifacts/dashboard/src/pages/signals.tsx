@@ -16,13 +16,9 @@ export default function Signals() {
 
   const strategies: { value: string; label: string }[] = [
     { value: "",                   label: "ALL" },
-    { value: "spread_harvesting",  label: "Spread" },
+    { value: "spread_engine",      label: "Spread" },
     { value: "neg_risk_overround", label: "Neg Risk" },
-    { value: "mean_reversion",     label: "Reversion" },
-    { value: "odds_shift",         label: "Odds Shift" },
-    { value: "micro_spread_scalp", label: "Micro Spread" },
-    { value: "tail_yield_harvest", label: "Tail Yield" },
-    { value: "binary_arb",         label: "Binary Arb" },
+    { value: "tail_yield_engine",  label: "Tail Yield" },
   ];
 
   return (

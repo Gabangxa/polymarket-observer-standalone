@@ -63,6 +63,6 @@ export function formatInTz(
 export function getStrategyColor(strategy: string): string {
   if (strategy.includes("spread")) return "text-blue-400 bg-blue-400/10 border-blue-400/20";
   if (strategy.includes("neg_risk")) return "text-purple-400 bg-purple-400/10 border-purple-400/20";
-  if (strategy.includes("reversion")) return "text-amber-400 bg-amber-400/10 border-amber-400/20";
+  if (strategy.includes("tail_yield")) return "text-orange-400 bg-orange-400/10 border-orange-400/20";
   return "text-slate-400 bg-slate-400/10 border-slate-400/20";
 }

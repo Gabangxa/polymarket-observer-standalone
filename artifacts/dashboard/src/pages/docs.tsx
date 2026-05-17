@@ -229,11 +229,11 @@ export default function Docs() {
 
           <div className="terminal-panel p-6 border-l-4 border-l-yellow-500/60">
             <div className="flex items-center gap-2 mb-3">
-              <Badge className="bg-yellow-500/10 text-yellow-400 border-yellow-500/20">spread_harvesting</Badge>
+              <Badge className="bg-yellow-500/10 text-yellow-400 border-yellow-500/20">spread_engine</Badge>
               <span className="text-xs font-mono text-muted-foreground">Resolution window: 2 hours</span>
             </div>
             <p className="text-sm text-muted-foreground leading-relaxed mb-3">
-              On every prediction market there's a <span className="text-foreground">bid-ask spread</span> — the gap between the cheapest YES you can buy and the cheapest NO you can buy. If that gap is large enough to cover round-trip trading fees with profit left over, you can act as a market maker: post both sides and collect the spread when orders fill.
+              On every prediction market there's a <span className="text-foreground">bid-ask spread</span> — the gap between the cheapest YES you can buy and the cheapest NO you can buy. If that gap is large enough to cover round-trip trading fees with profit left over, you can act as a market maker: post a passive bid one tick below the current ask and collect the spread when orders cross to you.
             </p>
             <div className="bg-muted/30 rounded p-3 font-mono text-xs space-y-1">
               <div className="text-muted-foreground">Signal fires when:</div>
@@ -264,50 +264,9 @@ export default function Docs() {
             </p>
           </div>
 
-          <div className="terminal-panel p-6 border-l-4 border-l-blue-500/60">
-            <div className="flex items-center gap-2 mb-3">
-              <Badge className="bg-blue-500/10 text-blue-400 border-blue-500/20">mean_reversion</Badge>
-              <span className="text-xs font-mono text-muted-foreground">Resolution window: 4 hours</span>
-            </div>
-            <p className="text-sm text-muted-foreground leading-relaxed mb-3">
-              In thin markets with low open interest, a single large order can move the price sharply without any new real-world information. These dislocations tend to partially reverse. The engine flags markets where the price moved more than a threshold within a rolling window, penalised by open interest (high OI = real move, not noise).
-            </p>
-            <div className="bg-muted/30 rounded p-3 font-mono text-xs space-y-1">
-              <div className="text-muted-foreground">Signal fires when:</div>
-              <div>
-                <span className="text-success">|end_price − start_price|</span> &gt;{" "}
-                <span className="text-primary">REVERSION_PRICE_MOVE_THRESHOLD</span>
-              </div>
-              <div className="text-muted-foreground mt-2">Score = delta × (1 − OI_penalty × 0.5)</div>
-              <div className="text-muted-foreground">Direction stored in metadata (up/down)</div>
-            </div>
-            <p className="text-sm text-muted-foreground mt-3">
-              <span className="text-foreground font-medium">In plain terms:</span> if a $50k market swings from $0.30 to $0.65 in two hours for no apparent reason, it's likely noise — bet on it returning toward $0.30.
-            </p>
-          </div>
-
-          <div className="terminal-panel p-6 border-l-4 border-l-green-500/60">
-            <div className="flex items-center gap-2 mb-3">
-              <Badge className="bg-green-500/10 text-green-400 border-green-500/20">micro_spread_scalp</Badge>
-              <span className="text-xs font-mono text-muted-foreground">Resolution window: 1 hour</span>
-            </div>
-            <p className="text-sm text-muted-foreground leading-relaxed mb-3">
-              When a market's bid-ask spread is wide enough to be exploited as a market maker, this engine models the optimal placement for both sides. Unlike the spread harvesting engine which focuses on fee coverage, micro-spread targets markets where the spread itself is large relative to typical tick size — creating short-term scalping opportunities.
-            </p>
-            <div className="bg-muted/30 rounded p-3 font-mono text-xs space-y-1">
-              <div className="text-muted-foreground">Signal fires when:</div>
-              <div><span className="text-success">spread</span> ≥ <span className="text-primary">MICRO_SPREAD_THRESHOLD (0.04)</span></div>
-              <div className="text-muted-foreground mt-2">Score = spread / 0.10 (capped at 1.0)</div>
-              <div className="text-muted-foreground">Metadata: best_bid, best_ask, optimal_bid, optimal_ask, potential_capture</div>
-            </div>
-            <p className="text-sm text-muted-foreground mt-3">
-              <span className="text-foreground font-medium">Expected frequency:</span> moderate — fires whenever the spread crosses 4¢, which happens regularly in active markets.
-            </p>
-          </div>
-
           <div className="terminal-panel p-6 border-l-4 border-l-orange-500/60">
             <div className="flex items-center gap-2 mb-3">
-              <Badge className="bg-orange-500/10 text-orange-400 border-orange-500/20">tail_yield_harvest</Badge>
+              <Badge className="bg-orange-500/10 text-orange-400 border-orange-500/20">tail_yield_engine</Badge>
               <span className="text-xs font-mono text-muted-foreground">Resolution window: at expiry</span>
             </div>
             <p className="text-sm text-muted-foreground leading-relaxed mb-3">
@@ -323,26 +282,6 @@ export default function Docs() {
             </div>
             <p className="text-sm text-muted-foreground mt-3">
               <span className="text-foreground font-medium">Expected frequency:</span> moderate — depends on how many markets are in the final 48 hours with high YES prices.
-            </p>
-          </div>
-
-          <div className="terminal-panel p-6 border-l-4 border-l-red-500/60">
-            <div className="flex items-center gap-2 mb-3">
-              <Badge className="bg-red-500/10 text-red-400 border-red-500/20">binary_arb</Badge>
-              <span className="text-xs font-mono text-muted-foreground">Resolution window: immediate</span>
-            </div>
-            <p className="text-sm text-muted-foreground leading-relaxed mb-3">
-              On a binary market, YES and NO are complementary: exactly one resolves to $1. If you can buy both YES and NO for a combined cost below $1, you lock in a guaranteed profit regardless of outcome. This engine monitors ask prices for both tokens and fires when their sum falls below the arb threshold.
-            </p>
-            <div className="bg-muted/30 rounded p-3 font-mono text-xs space-y-1">
-              <div className="text-muted-foreground">Signal fires when:</div>
-              <div><span className="text-success">yes_ask + no_ask</span> &lt; <span className="text-primary">ARB_THRESHOLD (0.98)</span></div>
-              <div className="text-muted-foreground mt-2">guaranteed_profit = 1.00 − (yes_ask + no_ask)</div>
-              <div className="text-muted-foreground">Score = guaranteed_profit / 0.05 (5¢ profit = 1.0 score)</div>
-              <div className="text-muted-foreground">Metadata: buy_yes_at, buy_no_at, total_cost, guaranteed_profit</div>
-            </div>
-            <p className="text-sm text-muted-foreground mt-3">
-              <span className="text-foreground font-medium">Expected frequency:</span> rare — genuine binary arb is quickly eliminated by market participants. Signals here likely reflect data staleness or thin liquidity rather than exploitable opportunities.
             </p>
           </div>
 
@@ -365,7 +304,7 @@ export default function Docs() {
               <tr>
                 <td className="px-4 py-3 font-mono text-xs text-foreground whitespace-nowrap">Strategy</td>
                 <td className="px-4 py-3">Which engine detected the opportunity</td>
-                <td className="px-4 py-3"><Badge className="bg-yellow-500/10 text-yellow-400 border-yellow-500/20">spread_harvesting</Badge></td>
+                <td className="px-4 py-3"><Badge className="bg-yellow-500/10 text-yellow-400 border-yellow-500/20">spread_engine</Badge></td>
               </tr>
               <tr>
                 <td className="px-4 py-3 font-mono text-xs text-foreground whitespace-nowrap">Score</td>
@@ -484,7 +423,7 @@ export default function Docs() {
           </FaqItem>
 
           <FaqItem q="What does 'score' actually mean — is higher always better?">
-            Generally yes, but the scale differs per strategy. For <strong>spread_harvesting</strong> and <strong>mean_reversion</strong> it's 0–1 (fraction of spread that's profit / price delta magnitude). For <strong>neg_risk_overround</strong> it's the raw overround (0.05 = 5¢ edge across all legs). For <strong>micro_spread_scalp</strong> it's spread ÷ 0.10, capped at 1.0. For <strong>tail_yield_harvest</strong> it's the annualised yield percentage ÷ 5. For <strong>binary_arb</strong> it's guaranteed profit ÷ 0.05 (5¢ profit = score of 1.0). Don't compare scores across strategies — compare within a strategy over time.
+            Generally yes, but the scale differs per strategy. For <strong>spread_engine</strong> it's 0–1 (fraction of spread that's net edge after fees). For <strong>neg_risk_overround</strong> it's the raw overround (0.05 = 5¢ edge across all legs). For <strong>tail_yield_engine</strong> it's the annualised yield percentage ÷ 5 (5% yield = score 1.0). Don't compare scores across strategies — compare within a strategy over time.
           </FaqItem>
 
           <FaqItem q="Why is my win rate blank / showing '—'?">

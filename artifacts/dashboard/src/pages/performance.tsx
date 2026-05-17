@@ -83,9 +83,6 @@ const STRATEGY_LABELS: Record<string, string> = {
   spread_engine:      "Spread",
   neg_risk_overround: "Neg Risk",
   tail_yield_engine:  "Tail Yield",
-  odds_shift:         "Odds Shift",
-  binary_arb:         "Binary Arb",
-  micro_spread_scalp: "Micro Spread",
 };
 
 // ── Component ─────────────────────────────────────────────────────────────────
