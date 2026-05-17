@@ -181,7 +181,11 @@ ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS no_ask NUMERIC;
 -- This replaces the application-level check+insert two-connection pattern with a
 -- single atomic INSERT ... ON CONFLICT DO NOTHING.
 CREATE UNIQUE INDEX IF NOT EXISTS signals_dedup_hourly
-    ON signals (strategy, COALESCE(market_id, event_slug), date_trunc('hour', emitted_at));
+    ON signals (
+        strategy,
+        COALESCE(market_id, event_slug),
+        date_trunc('hour', emitted_at AT TIME ZONE 'UTC')
+    );
 
 -- Execution tracking
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS executed BOOLEAN DEFAULT FALSE;
@@ -271,6 +275,30 @@ _MIGRATIONS = [
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS expiration_ts TIMESTAMPTZ",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS reprice_of BIGINT REFERENCES orders(id)",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS repriced BOOLEAN DEFAULT FALSE",
+    # Dedup accumulated duplicate signals before recreating the fixed unique index.
+    # signals_dedup_hourly never successfully created (date_trunc on timestamptz is
+    # STABLE not IMMUTABLE), so ON CONFLICT DO NOTHING was a no-op and duplicates
+    # accumulated. Keep the lowest id per (strategy, market/event, hour) and skip
+    # signals with attached orders to avoid FK violation.
+    """
+    DELETE FROM signals s1
+    USING signals s2
+    WHERE s1.id > s2.id
+      AND s1.strategy = s2.strategy
+      AND COALESCE(s1.market_id, s1.event_slug) = COALESCE(s2.market_id, s2.event_slug)
+      AND date_trunc('hour', s1.emitted_at AT TIME ZONE 'UTC')
+        = date_trunc('hour', s2.emitted_at AT TIME ZONE 'UTC')
+      AND NOT EXISTS (SELECT 1 FROM orders WHERE orders.signal_id = s1.id)
+    """,
+    "DROP INDEX IF EXISTS signals_dedup_hourly",
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS signals_dedup_hourly
+        ON signals (
+            strategy,
+            COALESCE(market_id, event_slug),
+            date_trunc('hour', emitted_at AT TIME ZONE 'UTC')
+        )
+    """,
 ]
 
 
