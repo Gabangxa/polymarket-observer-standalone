@@ -96,11 +96,37 @@ def _is_retryable(exc: Exception) -> bool:
     Return True if this error looks transient (timeout, 5xx, connection),
     False if it's a validation/business-logic rejection that won't recover with retry.
     """
-    msg = str(exc).lower()
+    msg = (_exception_detail(exc) or str(exc)).lower()
     for pattern in _NON_RETRYABLE_ERROR_PATTERNS:
         if pattern in msg:
             return False
     return True
+
+
+def _exception_detail(exc: Exception) -> str:
+    """
+    Best-effort extraction of useful info from a py-clob-client PolyApiException.
+    Falls back to repr(exc) for non-CLOB exceptions. The exception's str() drops
+    the status code and JSON body, which is what we actually need to diagnose
+    server-side rejections like 'Invalid order inputs'.
+    """
+    status = getattr(exc, "status_code", None)
+    body   = getattr(exc, "error_msg",   None)
+    if status is not None or body is not None:
+        return f"HTTP {status} body={body!r}"
+    return repr(exc)
+
+
+def _summarise_order_args(order_args, neg_risk: bool) -> dict:
+    """Compact, log-safe snapshot of what we tried to submit."""
+    return {
+        "token_id":   (getattr(order_args, "token_id", "") or "")[:24] + "…",
+        "side":       getattr(order_args, "side", None),
+        "price":      getattr(order_args, "price", None),
+        "size":       getattr(order_args, "size", None),
+        "expiration": getattr(order_args, "expiration", None),
+        "neg_risk":   neg_risk,
+    }
 
 
 def _backoff_retry(fn, max_retries: int = ORDER_MAX_RETRIES):
@@ -297,8 +323,16 @@ def _place_neg_risk_legs(signal: dict, client) -> dict:
             )
 
         except Exception as e:
-            logger.error(f"Neg-risk leg submission failed | clord_id={clord_id} market={market_id}: {e}")
-            db.update_order_status(clord_id, "REJECTED", error_msg=str(e))
+            detail = _exception_detail(e)
+            summary = _summarise_order_args(order_args, neg_risk=True)
+            logger.error(
+                f"Neg-risk leg submission failed | clord_id={clord_id} market={market_id} "
+                f"| sent={summary} | error={detail}"
+            )
+            db.update_order_status(
+                clord_id, "REJECTED",
+                error_msg=f"{detail} | sent={summary}",
+            )
 
     ok = legs_placed == legs_total
     if legs_placed > 0 and not ok:
@@ -421,8 +455,16 @@ def _place_neg_risk_maker_legs(signal: dict, client) -> dict:
             )
 
         except Exception as e:
-            logger.error(f"Maker leg submission failed | clord_id={clord_id} market={market_id}: {e}")
-            db.update_order_status(clord_id, "REJECTED", error_msg=str(e))
+            detail = _exception_detail(e)
+            summary = _summarise_order_args(order_args, neg_risk=True)
+            logger.error(
+                f"Maker leg submission failed | clord_id={clord_id} market={market_id} "
+                f"| sent={summary} | error={detail}"
+            )
+            db.update_order_status(
+                clord_id, "REJECTED",
+                error_msg=f"{detail} | sent={summary}",
+            )
             db.upsert_position(market_id, yes_token_id, "YES", delta_working_sell=-float(size_shares))
 
     ok = legs_placed == legs_total
@@ -585,14 +627,22 @@ def place_order(signal: dict, client, reprice_of: int = None) -> dict:
         return {"ok": True, "clord_id": clord_id, "error": None}
 
     except Exception as e:
-        logger.error(f"Order submission failed after retries | clord_id={clord_id}: {e}")
-        db.update_order_status(clord_id, "REJECTED", error_msg=str(e))
+        detail = _exception_detail(e)
+        summary = _summarise_order_args(order_args, neg_risk=bool(_opts and _opts.neg_risk))
+        logger.error(
+            f"Order submission failed | clord_id={clord_id} | strategy={strategy} "
+            f"| sent={summary} | error={detail}"
+        )
+        db.update_order_status(
+            clord_id, "REJECTED",
+            error_msg=f"{detail} | sent={summary}",
+        )
         alerts.order_rejected(
             strategy=strategy,
             market_id=market_id,
             question=metadata.get("question", ""),
             clord_id=clord_id,
-            error=str(e),
+            error=detail,
         )
         nats_bus.publish(
             f"pm.execution.rejected.{strategy}.{market_id}",
@@ -600,11 +650,11 @@ def place_order(signal: dict, client, reprice_of: int = None) -> dict:
                 "clord_id":  clord_id,
                 "strategy":  strategy,
                 "market_id": market_id,
-                "error":     str(e),
+                "error":     detail,
                 "ts":        datetime.now(timezone.utc).isoformat(),
             },
         )
-        return {"ok": False, "clord_id": clord_id, "error": str(e)}
+        return {"ok": False, "clord_id": clord_id, "error": detail}
 
 
 def poll_order_status(order: dict, client) -> None:
@@ -820,11 +870,19 @@ def place_exit_order(position: dict, price: float, client) -> dict:
         return {"ok": True, "clord_id": clord_id, "error": None}
 
     except Exception as e:
-        logger.error(f"Exit order submission failed | clord_id={clord_id}: {e}")
-        db.update_order_status(clord_id, "REJECTED", error_msg=str(e))
+        detail = _exception_detail(e)
+        summary = _summarise_order_args(order_args, neg_risk=bool(_opts and _opts.neg_risk))
+        logger.error(
+            f"Exit order submission failed | clord_id={clord_id} "
+            f"| sent={summary} | error={detail}"
+        )
+        db.update_order_status(
+            clord_id, "REJECTED",
+            error_msg=f"{detail} | sent={summary}",
+        )
         # Undo working_sell delta so position state stays accurate
         db.upsert_position(market_id, token_id, "YES", delta_working_sell=-float(size_shares))
-        return {"ok": False, "clord_id": clord_id, "error": str(e)}
+        return {"ok": False, "clord_id": clord_id, "error": detail}
 
 
 def cancel_all_open_orders(client) -> dict:
