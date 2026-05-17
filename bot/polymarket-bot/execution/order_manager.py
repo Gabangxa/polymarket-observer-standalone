@@ -93,6 +93,8 @@ _NON_RETRYABLE_ERROR_PATTERNS = (
     "order_type",           # order-type incompatibility
     "market closed",        # order submitted to a resolved/inactive market
     "market not active",
+    "does not exist",       # orderbook/market delisted or resolved — token no longer tradeable
+    "not found",            # generic resource-not-found rejections
 )
 
 
