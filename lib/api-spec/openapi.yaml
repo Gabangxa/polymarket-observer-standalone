@@ -126,6 +126,13 @@ paths:
           schema:
             type: integer
             default: 336
+        - name: hours
+          in: query
+          description: >
+            If provided, return one snapshot per hour over the trailing window
+            (capped at 720h). Overrides limit-based pagination.
+          schema:
+            type: integer
       responses:
         "200":
           description: Market snapshots
@@ -190,7 +197,7 @@ paths:
       operationId: listOrders
       tags: [orders]
       summary: List orders
-      description: Returns orders filtered by status group (active, closed, or all)
+      description: Returns orders filtered by status group and optional date range
       parameters:
         - name: status
           in: query
@@ -203,6 +210,18 @@ paths:
           schema:
             type: integer
             default: 200
+        - name: since
+          in: query
+          description: ISO-8601 timestamp; only orders with created_at >= since are returned
+          schema:
+            type: string
+            format: date-time
+        - name: until
+          in: query
+          description: ISO-8601 timestamp; only orders with created_at < until are returned
+          schema:
+            type: string
+            format: date-time
       responses:
         "200":
           description: Order list
@@ -605,6 +624,19 @@ components:
         question:
           type: string
           nullable: true
+        executed:
+          type: boolean
+          nullable: true
+          description: >
+            True once the executor has handled this signal (placed an order
+            or skipped with a reason). Prevents re-processing each cycle.
+        executedSkipReason:
+          type: string
+          nullable: true
+          description: >
+            Set when the executor skipped placing an order for this signal
+            (e.g. size_below_floor, missing_token_id). Mutually exclusive
+            with orders.status='REJECTED' which records CLOB-side rejections.
       required:
         - id
         - strategy

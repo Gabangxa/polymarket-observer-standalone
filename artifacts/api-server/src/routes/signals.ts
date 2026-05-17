@@ -63,6 +63,8 @@ router.get("/signals", async (req, res) => {
         pnl: signalsTable.pnl,
         resolved: signalsTable.resolved,
         outcome: signalsTable.outcome,
+        executed: signalsTable.executed,
+        executedSkipReason: signalsTable.executedSkipReason,
         question: marketsTable.question,
       })
       .from(signalsTable)

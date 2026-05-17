@@ -116,6 +116,12 @@ export interface Signal {
   pnl?: string | null;
   resolved?: boolean | null;
   question?: string | null;
+  /** True once the executor has handled this signal (placed an order or skipped with a reason). Prevents re-processing each cycle.
+   */
+  executed?: boolean | null;
+  /** Set when the executor skipped placing an order for this signal (e.g. size_below_floor, missing_token_id). Mutually exclusive with orders.status='REJECTED' which records CLOB-side rejections.
+   */
+  executedSkipReason?: string | null;
 }
 
 export interface SignalInput {
@@ -229,6 +235,10 @@ export type ListSnapshotsParams = {
 
 export type GetMarketSnapshotsParams = {
   limit?: number;
+  /**
+ * If provided, return one snapshot per hour over the trailing window (capped at 720h). Overrides limit-based pagination.
+
+ */
   hours?: number;
 };
 
@@ -242,6 +252,14 @@ export type ListSignalsParams = {
 export type ListOrdersParams = {
   status?: ListOrdersStatus;
   limit?: number;
+  /**
+   * ISO-8601 timestamp; only orders with created_at >= since are returned
+   */
+  since?: string;
+  /**
+   * ISO-8601 timestamp; only orders with created_at < until are returned
+   */
+  until?: string;
 };
 
 export type ListOrdersStatus =

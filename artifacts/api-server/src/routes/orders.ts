@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { ordersTable, positionsTable, marketsTable, botConfigTable } from "@workspace/db/schema";
-import { desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
 
 const router: IRouter = Router();
 
@@ -13,10 +13,18 @@ const ACTIVE_STATUSES = [
 ];
 const CLOSED_STATUSES = ["FILLED", "CANCELED", "REJECTED", "EXPIRED", "ERROR"];
 
+function parseIsoDate(raw: unknown): Date | null {
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 router.get("/orders", async (req, res) => {
   try {
     const statusGroup = (req.query.status as string) ?? "active";
     const limit = Math.min(Number(req.query.limit) || 200, 500);
+    const since = parseIsoDate(req.query.since);
+    const until = parseIsoDate(req.query.until);
 
     const statuses =
       statusGroup === "closed"
@@ -24,6 +32,10 @@ router.get("/orders", async (req, res) => {
         : statusGroup === "all"
           ? [...ACTIVE_STATUSES, ...CLOSED_STATUSES]
           : ACTIVE_STATUSES;
+
+    const conditions: SQL[] = [inArray(ordersTable.status, statuses)];
+    if (since) conditions.push(gte(ordersTable.createdAt, since));
+    if (until) conditions.push(lt(ordersTable.createdAt, until));
 
     const orders = await db
       .select({
@@ -50,7 +62,7 @@ router.get("/orders", async (req, res) => {
       })
       .from(ordersTable)
       .leftJoin(marketsTable, eq(ordersTable.marketId, marketsTable.marketId))
-      .where(inArray(ordersTable.status, statuses))
+      .where(conditions.length === 1 ? conditions[0] : and(...conditions))
       .orderBy(desc(ordersTable.createdAt))
       .limit(limit);
 

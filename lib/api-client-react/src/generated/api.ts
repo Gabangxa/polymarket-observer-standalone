@@ -770,7 +770,7 @@ export const useCreateSignal = <
 };
 
 /**
- * Returns orders filtered by status group (active, closed, or all)
+ * Returns orders filtered by status group and optional date range
  * @summary List orders
  */
 export const getListOrdersUrl = (params?: ListOrdersParams) => {

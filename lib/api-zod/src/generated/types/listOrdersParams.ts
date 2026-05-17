@@ -10,4 +10,12 @@ import type { ListOrdersStatus } from "./listOrdersStatus";
 export type ListOrdersParams = {
   status?: ListOrdersStatus;
   limit?: number;
+  /**
+   * ISO-8601 timestamp; only orders with created_at >= since are returned
+   */
+  since?: Date;
+  /**
+   * ISO-8601 timestamp; only orders with created_at < until are returned
+   */
+  until?: Date;
 };

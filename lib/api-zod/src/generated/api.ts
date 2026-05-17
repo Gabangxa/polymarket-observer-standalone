@@ -143,6 +143,12 @@ export const getMarketSnapshotsQueryLimitDefault = 336;
 
 export const GetMarketSnapshotsQueryParams = zod.object({
   limit: zod.coerce.number().default(getMarketSnapshotsQueryLimitDefault),
+  hours: zod.coerce
+    .number()
+    .optional()
+    .describe(
+      "If provided, return one snapshot per hour over the trailing window (capped at 720h). Overrides limit-based pagination.\n",
+    ),
 });
 
 export const GetMarketSnapshotsResponse = zod.object({
@@ -199,6 +205,18 @@ export const ListSignalsResponse = zod.object({
       pnl: zod.string().nullish(),
       resolved: zod.boolean().nullish(),
       question: zod.string().nullish(),
+      executed: zod
+        .boolean()
+        .nullish()
+        .describe(
+          "True once the executor has handled this signal (placed an order or skipped with a reason). Prevents re-processing each cycle.\n",
+        ),
+      executedSkipReason: zod
+        .string()
+        .nullish()
+        .describe(
+          "Set when the executor skipped placing an order for this signal (e.g. size_below_floor, missing_token_id). Mutually exclusive with orders.status='REJECTED' which records CLOB-side rejections.\n",
+        ),
     }),
   ),
   count: zod.number(),
@@ -221,7 +239,7 @@ export const CreateSignalBody = zod.object({
 });
 
 /**
- * Returns orders filtered by status group (active, closed, or all)
+ * Returns orders filtered by status group and optional date range
  * @summary List orders
  */
 export const listOrdersQueryStatusDefault = `active`;
@@ -232,6 +250,18 @@ export const ListOrdersQueryParams = zod.object({
     .enum(["active", "closed", "all"])
     .default(listOrdersQueryStatusDefault),
   limit: zod.coerce.number().default(listOrdersQueryLimitDefault),
+  since: zod
+    .date()
+    .optional()
+    .describe(
+      "ISO-8601 timestamp; only orders with created_at >= since are returned",
+    ),
+  until: zod
+    .date()
+    .optional()
+    .describe(
+      "ISO-8601 timestamp; only orders with created_at < until are returned",
+    ),
 });
 
 export const ListOrdersResponse = zod.object({
