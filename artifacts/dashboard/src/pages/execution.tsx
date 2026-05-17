@@ -43,6 +43,7 @@ import {
   type OrderAnalyticsRow,
 } from "@/hooks/use-polymarket";
 import { TableSkeleton, Badge } from "@/components/ui-elements";
+import { Input } from "@/components/ui/input";
 import {
   formatInTz,
   getStrategyColor,
@@ -51,6 +52,94 @@ import {
   cn,
 } from "@/lib/utils";
 import { useTimezone } from "@/hooks/use-timezone";
+
+// ── Date range filter helper ──────────────────────────────────────────────────
+// Local component used by both order blotters. State lives in the parent so
+// the same query params (since/until) can be threaded into useLiveOrders.
+// Empty inputs send no filter — the server returns the default window.
+
+interface DateRangeState {
+  from: string;   // "YYYY-MM-DD" or ""
+  to:   string;   // "YYYY-MM-DD" or ""
+}
+
+function useDateRange(): [DateRangeState, (next: DateRangeState) => void] {
+  const [range, setRange] = useState<DateRangeState>({ from: "", to: "" });
+  return [range, setRange];
+}
+
+function dateRangeToParams(r: DateRangeState): { since?: string; until?: string } {
+  // The generated REST client wants ISO-8601 strings on the wire even though
+  // the Zod schema coerces to Date. Convert here so callers can spread the
+  // result directly into useLiveOrders({...}) without per-call shaping.
+  const out: { since?: string; until?: string } = {};
+  if (r.from) {
+    const d = new Date(`${r.from}T00:00:00Z`);
+    if (!Number.isNaN(d.getTime())) out.since = d.toISOString();
+  }
+  if (r.to) {
+    // Inclusive end-of-day: filter is created_at < until, so add one day.
+    const d = new Date(`${r.to}T00:00:00Z`);
+    if (!Number.isNaN(d.getTime())) {
+      d.setUTCDate(d.getUTCDate() + 1);
+      out.until = d.toISOString();
+    }
+  }
+  return out;
+}
+
+function DateRangeFilter({
+  range,
+  setRange,
+  label,
+}: {
+  range: DateRangeState;
+  setRange: (next: DateRangeState) => void;
+  label?: string;
+}) {
+  const active = range.from !== "" || range.to !== "";
+  return (
+    <div
+      className="flex items-center gap-2 px-4 py-2 text-xs font-mono"
+      style={{
+        borderBottom: "1px solid var(--color-app-border)",
+        background: "color-mix(in srgb, var(--color-app-surface-hover) 30%, transparent)",
+        color: "var(--color-text-tertiary)",
+      }}
+    >
+      {label && <span className="uppercase tracking-wider">{label}</span>}
+      <span>From</span>
+      <Input
+        type="date"
+        value={range.from}
+        onChange={(e) => setRange({ ...range, from: e.target.value })}
+        className="h-7 w-[140px] py-0 text-xs"
+        max={range.to || undefined}
+      />
+      <span>To</span>
+      <Input
+        type="date"
+        value={range.to}
+        onChange={(e) => setRange({ ...range, to: e.target.value })}
+        className="h-7 w-[140px] py-0 text-xs"
+        min={range.from || undefined}
+      />
+      {active && (
+        <button
+          type="button"
+          onClick={() => setRange({ from: "", to: "" })}
+          className="ml-1 px-2 py-1 rounded border text-xs uppercase tracking-wider hover:bg-[var(--color-app-surface-hover)]"
+          style={{
+            borderColor: "var(--color-app-border)",
+            color: "var(--color-text-secondary)",
+          }}
+        >
+          Clear
+        </button>
+      )}
+    </div>
+  );
+}
 
 // ── Status helpers ─────────────────────────────────────────────────────────────
 
@@ -226,7 +315,8 @@ function ConfirmDialog({
 // ── Active order blotter ───────────────────────────────────────────────────────
 
 function ActiveBlotter() {
-  const { data, isLoading } = useLiveOrders({ status: "active" });
+  const [range, setRange] = useDateRange();
+  const { data, isLoading } = useLiveOrders({ status: "active", ...dateRangeToParams(range) });
   const { timezone } = useTimezone();
   const qc = useQueryClient();
   const cancelMutation = useCancelOrder({
@@ -255,6 +345,8 @@ function ActiveBlotter() {
         }}
         onCancel={() => setConfirmId(null)}
       />
+
+      <DateRangeFilter range={range} setRange={setRange} label="Date" />
 
       <div className="overflow-x-auto">
         <table className="w-full text-sm text-left whitespace-nowrap">
@@ -404,12 +496,19 @@ function ActiveBlotter() {
 // ── Closed / failed execution blotter ─────────────────────────────────────────
 
 function ClosedBlotter() {
-  const { data, isLoading } = useLiveOrders({ status: "closed", limit: 200 });
+  const [range, setRange] = useDateRange();
+  const { data, isLoading } = useLiveOrders({
+    status: "closed",
+    limit: 200,
+    ...dateRangeToParams(range),
+  });
   const { timezone } = useTimezone();
   const orders = data?.orders ?? [];
 
   return (
-    <div className="overflow-x-auto">
+    <div>
+      <DateRangeFilter range={range} setRange={setRange} label="Date" />
+      <div className="overflow-x-auto">
       <table className="w-full text-sm text-left whitespace-nowrap">
         <thead
           className="text-xs font-mono uppercase"
@@ -546,6 +645,7 @@ function ClosedBlotter() {
           )}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
