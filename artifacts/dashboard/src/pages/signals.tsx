@@ -132,11 +132,38 @@ export default function Signals() {
                        {signal.entryPrice ? formatPrice(signal.entryPrice) : "-"}
                     </td>
                     <td className="px-4 py-4 text-center">
-                       {signal.resolved ? (
-                         <Badge className="bg-muted text-muted-foreground border-border">Resolved</Badge>
-                       ) : (
-                         <Badge className="bg-primary/20 text-primary border-primary/30 animate-pulse">Active</Badge>
-                       )}
+                       {(() => {
+                         if (signal.resolved) {
+                           return (
+                             <Badge className="bg-muted text-muted-foreground border-border">
+                               Resolved
+                             </Badge>
+                           );
+                         }
+                         if (signal.executedSkipReason) {
+                           return (
+                             <span
+                               title={`Executor skipped this signal: ${signal.executedSkipReason}`}
+                             >
+                               <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/30">
+                                 Skipped: {signal.executedSkipReason}
+                               </Badge>
+                             </span>
+                           );
+                         }
+                         if (signal.executed) {
+                           return (
+                             <Badge className="bg-sky-500/15 text-sky-400 border-sky-500/30">
+                               Executed
+                             </Badge>
+                           );
+                         }
+                         return (
+                           <Badge className="bg-primary/20 text-primary border-primary/30 animate-pulse">
+                             Active
+                           </Badge>
+                         );
+                       })()}
                     </td>
                   </tr>
                 ))
