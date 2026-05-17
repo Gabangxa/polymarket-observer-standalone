@@ -88,13 +88,46 @@ def _process_signals(client) -> int:
         result = order_manager.place_order(signal, client)
         if result["ok"]:
             placed += 1
-        else:
-            logger.warning(
-                f"Order failed | signal_id={signal_id} | "
-                f"clord_id={result['clord_id']} | error={result['error']}"
-            )
+            continue
+
+        logger.warning(
+            f"Order failed | signal_id={signal_id} | "
+            f"clord_id={result['clord_id']} | error={result['error']}"
+        )
+
+        # When place_order rejects before any CLOB call (size below floor,
+        # missing token, missing price), the signal would otherwise loop back
+        # into get_executable_signals on the next cycle and re-fail with the
+        # same reason. Mark it executed-with-skip-reason so it leaves the queue
+        # and the dashboard can show *why* no order was placed.
+        skip_reason = _classify_skip_reason(result.get("error", ""))
+        if skip_reason and signal_id:
+            db.mark_signal_skipped(signal_id, skip_reason)
 
     return placed
+
+
+def _classify_skip_reason(err: str) -> str | None:
+    """
+    Map known place_order error strings to short, stable skip-reason codes for
+    the dashboard. Returns None for errors that came from the CLOB itself
+    (orders.status='REJECTED' already records those) or for transient errors
+    we want the executor to retry next cycle.
+    """
+    if not err:
+        return None
+    lower = err.lower()
+    if "computed size is zero" in lower or "below minimum" in lower:
+        return "size_below_floor"
+    if "missing token_id" in lower or "no token_id" in lower:
+        return "missing_token_id"
+    if "missing yes_price" in lower or "missing yes_ask" in lower:
+        return "missing_price_metadata"
+    if "non-positive" in lower:
+        return "price_at_min_tick"
+    if "no order logic" in lower:
+        return "unknown_strategy"
+    return None
 
 
 def _evaluate_reprice(order: dict, snapshot: dict) -> dict | None:

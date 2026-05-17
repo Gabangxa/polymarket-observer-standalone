@@ -265,6 +265,7 @@ def init_schema() -> None:
 _MIGRATIONS = [
     "ALTER TABLE signals ADD COLUMN IF NOT EXISTS executed BOOLEAN DEFAULT FALSE",
     "ALTER TABLE signals ADD COLUMN IF NOT EXISTS outcome BOOLEAN",
+    "ALTER TABLE signals ADD COLUMN IF NOT EXISTS executed_skip_reason TEXT",
     "ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS yes_ask NUMERIC",
     "ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS no_ask NUMERIC",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS expiration_ts TIMESTAMPTZ",
@@ -864,6 +865,31 @@ def mark_signal_executed(signal_id: int) -> None:
             cur.execute(
                 "UPDATE signals SET executed = TRUE WHERE id = %s",
                 (signal_id,),
+            )
+
+
+def mark_signal_skipped(signal_id: int, reason: str) -> None:
+    """
+    Mark a signal as executed but skipped before an order was placed, with a
+    human-readable reason. Lets the dashboard surface why no order fired
+    instead of leaving the operator guessing.
+
+    Examples of skip reasons:
+      - "size_below_floor"       — computed size_usdc < _MIN_ORDER_USDC
+      - "size_zero_kelly_zero"   — Kelly fraction was 0 / negative
+      - "missing_token_id"       — engine produced a signal without resolvable token
+      - "no_yes_price"           — required price field absent from metadata
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE signals
+                SET executed = TRUE,
+                    executed_skip_reason = %s
+                WHERE id = %s
+                """,
+                (reason, signal_id),
             )
 
 
