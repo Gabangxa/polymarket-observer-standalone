@@ -43,6 +43,12 @@ ARCHIVE_GRACE_HOURS = 48
 # 160 API calls per cycle — comfortable under Polymarket rate limits.
 NEG_RISK_LIVE_RESOLVE_CAP = 20
 
+# Tokens whose orderbook returned 404 are permanently gone (market resolved,
+# delisted, or never existed). Cached for the process lifetime so we don't
+# hammer the /midpoint endpoint with calls we know will fail. Transient
+# failures (timeout / 5xx) do NOT poison the cache.
+_DEAD_TOKENS: set[str] = set()
+
 
 def _resolve_spread(signal: dict, current_snapshot: dict):
     """
@@ -79,20 +85,28 @@ def _resolve_tail_yield(signal: dict, current_snapshot: dict):
     return outcome, round(exit_price, 4), pnl
 
 
-def _resolve_neg_risk(signal: dict, snapshots_by_market: dict, allow_live_api: bool = True):
+def _resolve_neg_risk(
+    signal: dict,
+    snapshots_by_market: dict,
+    allow_live_api: bool = True,
+) -> tuple[bool | None, float | None, float | None, bool]:
     """
     Neg-risk wins if the over-round has decreased since signal time.
     Re-sums yes_prices for all outcome markets in the event.
-    PnL is the raw change in the sum of prices (fractional, same unit as other strategies).
-    exit_price stores the current sum of prices for the event.
 
     Price source per leg (in priority order):
       1. snapshots_by_market[market_id] — cached batch, zero cost
-      2. polymarket_api.get_midpoint(yes_token_id) — live API call
+      2. polymarket_api.get_midpoint_status(yes_token_id) — live API call,
+         skipped entirely if the token is already in _DEAD_TOKENS
 
-    The resolution requires every leg to have a current price. A single missing
-    leg makes the sum incomplete and returns None — signals are NOT resolved
-    against partial data (would produce phantom WIN/LOSS outcomes).
+    The resolution requires every leg to have a current price. A single
+    missing leg makes the sum incomplete — signals are NOT resolved against
+    partial data (would produce phantom WIN/LOSS outcomes).
+
+    Returns (outcome, exit_price, pnl, has_dead_leg). When has_dead_leg is
+    True the caller should archive the signal immediately rather than
+    waiting the full grace window — at least one leg's market is gone for
+    good and the signal cannot resolve via this path.
 
     allow_live_api: pass False to skip API calls (used for the rate-limited
     batch of cached-only resolutions before falling through to live).
@@ -102,10 +116,10 @@ def _resolve_neg_risk(signal: dict, snapshots_by_market: dict, allow_live_api: b
     outcomes  = meta.get("outcomes") or []
 
     if not outcomes:
-        return None, None, None
+        return None, None, None, False
 
     current_prices = []
-    api_calls = 0
+    has_dead_leg = False
     for outcome_item in outcomes:
         mid = outcome_item.get("market_id")
         price = None
@@ -117,24 +131,31 @@ def _resolve_neg_risk(signal: dict, snapshots_by_market: dict, allow_live_api: b
             if raw is not None:
                 price = float(raw)
 
-        # Tier 2: live API midpoint via the leg's yes_token_id from metadata
+        # Tier 2: live API midpoint via the leg's yes_token_id from metadata.
+        # Skip if we've already confirmed this token's orderbook is gone.
         if price is None and allow_live_api:
             token_id = outcome_item.get("yes_token_id")
+            if token_id and token_id in _DEAD_TOKENS:
+                has_dead_leg = True
+                return None, None, None, True
             if token_id:
-                live = polymarket_api.get_midpoint(token_id)
-                api_calls += 1
+                live, is_gone = polymarket_api.get_midpoint_status(token_id)
+                if is_gone:
+                    _DEAD_TOKENS.add(token_id)
+                    has_dead_leg = True
+                    return None, None, None, True
                 if live is not None and live > 0:
                     price = float(live)
 
         if price is None:
-            return None, None, None
+            return None, None, None, False
         current_prices.append(price)
 
     current_sum = sum(current_prices)
     outcome     = current_sum < entry_sum                   # over-round tightened = win
     pnl         = round(entry_sum - current_sum, 6)         # fractional price units, same as other strategies
     exit_price  = round(current_sum, 6)
-    return outcome, exit_price, pnl
+    return outcome, exit_price, pnl, False
 
 
 def run():
@@ -183,18 +204,24 @@ def run():
 
                 elif strategy == "neg_risk_overround":
                     # First try cached-only resolution (zero cost).
-                    outcome, exit_price, pnl = _resolve_neg_risk(
+                    outcome, exit_price, pnl, has_dead_leg = _resolve_neg_risk(
                         signal, snapshots_by_market, allow_live_api=False
                     )
                     # Fall through to live API resolution within the per-cycle budget.
-                    if outcome is None and neg_risk_live_budget > 0:
+                    if outcome is None and not has_dead_leg and neg_risk_live_budget > 0:
                         neg_risk_live_budget -= 1
-                        outcome, exit_price, pnl = _resolve_neg_risk(
+                        outcome, exit_price, pnl, has_dead_leg = _resolve_neg_risk(
                             signal, snapshots_by_market, allow_live_api=True
                         )
                     if outcome is None:
-                        # Check archive eligibility: signals past their grace window
-                        # whose data is permanently gone get marked resolved with no outcome.
+                        # Archive early if any leg's market is confirmed gone
+                        # (404 on midpoint) — the signal cannot resolve via this
+                        # path, no need to wait the full grace window.
+                        if has_dead_leg:
+                            db.archive_signal(signal["id"])
+                            archived_total += 1
+                            continue
+                        # Standard archive path: past resolution window + grace.
                         emitted_at = signal.get("emitted_at")
                         if emitted_at is not None:
                             age_hours = (now - emitted_at).total_seconds() / 3600

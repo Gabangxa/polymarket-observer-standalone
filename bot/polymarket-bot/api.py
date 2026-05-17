@@ -135,12 +135,50 @@ def get_price_history(
 
 
 def get_midpoint(token_id: str) -> float | None:
+    """Returns the current YES midpoint or None on any failure."""
+    price, _ = get_midpoint_status(token_id)
+    return price
+
+
+def get_midpoint_status(token_id: str) -> tuple[float | None, bool]:
+    """
+    Returns (midpoint_price, is_gone).
+
+      (price, False) — got the midpoint, price > 0
+      (None,  True)  — orderbook returned 404, market is permanently gone
+                       (resolved, delisted, or never existed). Callers should
+                       cache the token_id and stop querying it.
+      (None,  False) — transient failure (timeout, 5xx, parse error). Caller
+                       may retry later.
+
+    Bypasses _get so the 404 case does not log at ERROR — that path is
+    expected behaviour for resolved markets and was producing log floods
+    from outcome_tracker's live-API fallback.
+    """
+    url = f"{CLOB_API}/midpoint"
     try:
-        data = _get(CLOB_API, "/midpoint", {"token_id": token_id})
-        v = float(data.get("mid", 0))
-        return v if v > 0 else None
-    except Exception:
-        return None
+        resp = _client.get(url, params={"token_id": token_id})
+    except httpx.RequestError as e:
+        logger.warning(f"midpoint transport error for {token_id[:20]}…: {e}")
+        return None, False
+
+    if resp.status_code == 404:
+        logger.debug(f"No orderbook for token {token_id[:20]}… (resolved/delisted)")
+        return None, True
+
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        logger.warning(f"midpoint HTTP {e.response.status_code} for {token_id[:20]}…: {e.response.text[:120]}")
+        return None, False
+
+    try:
+        v = float(resp.json().get("mid", 0))
+    except (ValueError, TypeError) as e:
+        logger.warning(f"midpoint parse error for {token_id[:20]}…: {e}")
+        return None, False
+
+    return (v, False) if v > 0 else (None, False)
 
 
 def get_fee_rate(token_id: str) -> float:
