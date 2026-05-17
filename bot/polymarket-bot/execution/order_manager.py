@@ -316,7 +316,7 @@ def _place_neg_risk_legs(signal: dict, client) -> dict:
             continue
 
         try:
-            from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
+            from py_clob_client_v2.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
             order_args = OrderArgs(
                 token_id=token_id,
                 price=float(price),
@@ -326,7 +326,7 @@ def _place_neg_risk_legs(signal: dict, client) -> dict:
             _opts = PartialCreateOrderOptions(neg_risk=True)
 
             def _submit():
-                order_args.expiration = str(expiration)
+                order_args.expiration = expiration
                 signed = client.create_order(order_args, _opts)
                 _dump_signed_order(signed, _opts, {
                     "signal_id": signal_id,
@@ -455,7 +455,7 @@ def _place_neg_risk_maker_legs(signal: dict, client) -> dict:
         db.upsert_position(market_id, yes_token_id, "YES", delta_working_sell=float(size_shares))
 
         try:
-            from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
+            from py_clob_client_v2.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
             order_args = OrderArgs(
                 token_id=yes_token_id,
                 price=float(price),
@@ -465,7 +465,7 @@ def _place_neg_risk_maker_legs(signal: dict, client) -> dict:
             _opts = PartialCreateOrderOptions(neg_risk=True)
 
             def _submit():
-                order_args.expiration = str(expiration)
+                order_args.expiration = expiration
                 signed = client.create_order(order_args, _opts)
                 _dump_signed_order(signed, _opts, {
                     "signal_id": signal_id,
@@ -611,7 +611,7 @@ def place_order(signal: dict, client, reprice_of: int = None) -> dict:
 
     # Submit to CLOB with GTD and backoff
     try:
-        from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
+        from py_clob_client_v2.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
         order_args = OrderArgs(
             token_id=token_id,
             price=float(price),
@@ -621,7 +621,7 @@ def place_order(signal: dict, client, reprice_of: int = None) -> dict:
         _opts = PartialCreateOrderOptions(neg_risk=True) if signal.get("neg_risk") else None
 
         def _submit():
-            order_args.expiration = str(expiration)
+            order_args.expiration = expiration
             signed = client.create_order(order_args, _opts)
             _dump_signed_order(signed, _opts, {
                 "signal_id": signal_id,
@@ -872,7 +872,7 @@ def place_exit_order(position: dict, price: float, client) -> dict:
     db.upsert_position(market_id, token_id, "YES", delta_working_sell=float(size_shares))
 
     try:
-        from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
+        from py_clob_client_v2.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
         order_args = OrderArgs(
             token_id=token_id,
             price=float(price_d),
@@ -882,7 +882,7 @@ def place_exit_order(position: dict, price: float, client) -> dict:
         _opts = PartialCreateOrderOptions(neg_risk=True) if position.get("neg_risk") else None
 
         def _submit():
-            order_args.expiration = str(expiration)
+            order_args.expiration = expiration
             signed = client.create_order(order_args, _opts)
             return client.post_order(signed, OrderType.GTD)
 

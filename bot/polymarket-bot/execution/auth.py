@@ -63,11 +63,11 @@ def get_client():
             )
 
         try:
-            from py_clob_client.client import ClobClient
+            from py_clob_client_v2.client import ClobClient
         except ImportError as e:
             raise RuntimeError(
-                "py-clob-client is not installed. "
-                "Add it to requirements.txt: py-clob-client>=0.17.0"
+                "py-clob-client-v2 is not installed. "
+                "Add it to requirements.txt: py-clob-client-v2>=1.0.1"
             ) from e
 
         if SIG_TYPE not in (0, 1, 2):
@@ -96,7 +96,7 @@ def get_client():
         # Derive L2 API credentials from the wallet. This call signs a message
         # on-chain — it will fail if the key is invalid or the network is unreachable.
         try:
-            client.set_api_creds(client.create_or_derive_api_creds())
+            client.set_api_creds(client.create_or_derive_api_key())
             logger.info("ClobClient L2 credentials derived successfully")
         except Exception as e:
             raise RuntimeError(f"Failed to derive L2 API credentials: {e}") from e

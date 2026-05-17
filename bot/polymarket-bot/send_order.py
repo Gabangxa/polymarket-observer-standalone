@@ -66,7 +66,7 @@ def main():
         sys.exit(1)
 
     from decimal import Decimal, ROUND_DOWN
-    from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
+    from py_clob_client_v2.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
     from execution.auth import get_client
 
     tick_size = None
