@@ -88,6 +88,10 @@ _NON_RETRYABLE_ERROR_PATTERNS = (
     "already exists",
     "duplicate",
     "expired",              # GTD expiration in the past
+    "version_mismatch",     # order_version_mismatch — server-side schema rejection, never recovers
+    "order_type",           # order-type incompatibility
+    "market closed",        # order submitted to a resolved/inactive market
+    "market not active",
 )
 
 
