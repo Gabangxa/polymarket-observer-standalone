@@ -299,6 +299,12 @@ _MIGRATIONS = [
             date_trunc('hour', emitted_at AT TIME ZONE 'UTC')
         )
     """,
+    # Ensure positions table has the UNIQUE constraint required for upsert_position's
+    # ON CONFLICT (market_id, token_id, side). The table may have been created before
+    # the UNIQUE clause was added to SCHEMA_SQL, and subsequent SCHEMA_SQL runs all
+    # rolled back (IMMUTABLE index error) so the constraint was never retroactively added.
+    # _run_migrations catches the error if the constraint already exists — safe to re-run.
+    "ALTER TABLE positions ADD CONSTRAINT positions_unique_market_token_side UNIQUE (market_id, token_id, side)",
 ]
 
 
