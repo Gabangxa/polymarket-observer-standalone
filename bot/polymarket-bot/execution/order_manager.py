@@ -5,6 +5,7 @@
 # One failed order never raises out of this module — callers get a status dict.
 
 import logging
+import os
 import time
 import uuid
 from datetime import datetime, timezone
@@ -131,6 +132,24 @@ def _summarise_order_args(order_args, neg_risk: bool) -> dict:
         "expiration": getattr(order_args, "expiration", None),
         "neg_risk":   neg_risk,
     }
+
+
+def _dump_signed_order(signed, opts, context: dict) -> None:
+    """Log the full signed EIP-712 payload. Gated on POLYMARKET_DEBUG_SIGN=1.
+    Captures verifyingContract, chainId, signatureType, and the full order struct
+    so we can diagnose signing mismatches without guessing."""
+    if not os.environ.get("POLYMARKET_DEBUG_SIGN"):
+        return
+    try:
+        payload = signed.dict() if hasattr(signed, "dict") else vars(signed)
+    except Exception:
+        payload = repr(signed)
+    logger.info(
+        "SIGNED_ORDER_DUMP | context=%s | neg_risk=%s | payload=%r",
+        context,
+        getattr(opts, "neg_risk", None) if opts else False,
+        payload,
+    )
 
 
 def _backoff_retry(fn, max_retries: int = ORDER_MAX_RETRIES):
@@ -309,6 +328,12 @@ def _place_neg_risk_legs(signal: dict, client) -> dict:
             def _submit():
                 order_args.expiration = str(expiration)
                 signed = client.create_order(order_args, _opts)
+                _dump_signed_order(signed, _opts, {
+                    "signal_id": signal_id,
+                    "strategy": "neg_risk_overround",
+                    "token_id": token_id[:24],
+                    "market_id": market_id,
+                })
                 return client.post_order(signed, OrderType.GTD)
 
             db.update_order_status(clord_id, "SENT", submitted_at=datetime.now(timezone.utc))
@@ -442,6 +467,12 @@ def _place_neg_risk_maker_legs(signal: dict, client) -> dict:
             def _submit():
                 order_args.expiration = str(expiration)
                 signed = client.create_order(order_args, _opts)
+                _dump_signed_order(signed, _opts, {
+                    "signal_id": signal_id,
+                    "strategy": "neg_risk_overround_maker",
+                    "token_id": yes_token_id[:24],
+                    "market_id": market_id,
+                })
                 return client.post_order(signed, OrderType.GTD)
 
             db.update_order_status(clord_id, "SENT", submitted_at=datetime.now(timezone.utc))
@@ -592,6 +623,12 @@ def place_order(signal: dict, client, reprice_of: int = None) -> dict:
         def _submit():
             order_args.expiration = str(expiration)
             signed = client.create_order(order_args, _opts)
+            _dump_signed_order(signed, _opts, {
+                "signal_id": signal_id,
+                "strategy": strategy,
+                "token_id": token_id[:24],
+                "market_id": market_id,
+            })
             return client.post_order(signed, OrderType.GTD)
 
         db.update_order_status(clord_id, "SENT", submitted_at=datetime.now(timezone.utc))
