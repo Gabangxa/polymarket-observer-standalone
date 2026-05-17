@@ -3,7 +3,7 @@ import logging
 import db
 from config import (
     YIELD_MIN_PRICE, YIELD_HOURS_TO_EXPIRY,
-    KELLY_FRACTION, MAX_POSITION_PCT,
+    KELLY_FRACTION,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,9 +58,11 @@ def run():
 
         # Kelly fraction scales linearly with signal_score.
         # No empirical q is tracked yet for the tail-yield base rate, so this
-        # uses signal_score as a confidence proxy: full ¼-Kelly slot at score=1.0,
-        # graduated below. _size_from_signal caps at MAX_POSITION_PCT.
-        kelly_fraction = round(KELLY_FRACTION * MAX_POSITION_PCT * max(0.0, score), 6)
+        # uses signal_score as a confidence proxy: at score=1.0 we recommend
+        # KELLY_FRACTION of bankroll (the ¼-Kelly safety scaling). The
+        # per-position cap is applied once by _size_from_signal — do NOT
+        # multiply by MAX_POSITION_PCT here or sizing double-discounts.
+        kelly_fraction = round(KELLY_FRACTION * max(0.0, score), 6)
 
         signal = {
             "strategy":        "tail_yield_engine",

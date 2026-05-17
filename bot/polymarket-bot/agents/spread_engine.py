@@ -7,7 +7,7 @@ from config import (
     SPREAD_FEE_MULTIPLE, SPREAD_MIN_SIGNAL_SCORE,
     SPREAD_MIN_YES_PRICE, SPREAD_MAX_YES_PRICE,
     FEE_RATES, DEFAULT_FEE_RATE,
-    KELLY_FRACTION, MAX_POSITION_PCT,
+    KELLY_FRACTION,
 )
 import db
 
@@ -15,16 +15,19 @@ import db
 def _kelly_for_score(signal_score: float) -> float:
     """
     Fraction of bankroll to bet, scaled linearly by signal_score.
-    Full ¼-Kelly position (= MAX_POSITION_PCT × KELLY_FRACTION bankroll) at score=1.0;
-    proportionally smaller below. Order_manager._size_from_signal multiplies this
-    by bankroll and caps at MAX_POSITION_PCT, so the value here never exceeds the cap.
+    At score=1.0 this is KELLY_FRACTION (the safety-scaled Kelly cap, ¼ Kelly
+    by default); below 1.0 it scales proportionally.
 
-    Spread harvesting has no clean directional Kelly model (the edge is in the
-    microstructure, not the outcome probability) — so we use signal quality as
-    the sizing proxy. A signal at the minimum threshold gets 60% of the slot a
-    score-1.0 signal gets, which matches the relative edge captured.
+    _size_from_signal multiplies this by bankroll and clamps the result to
+    the per-position cap from the dashboard (db.get_max_position_pct()).
+    The cap is applied ONCE downstream — this function must not bake it in
+    again or sizing double-discounts and orders fall below the $5 floor.
+
+    Spread harvesting has no clean directional Kelly model (the edge is in
+    the microstructure, not the outcome probability), so we use signal
+    quality as the sizing proxy.
     """
-    return round(KELLY_FRACTION * MAX_POSITION_PCT * max(0.0, signal_score), 6)
+    return round(KELLY_FRACTION * max(0.0, signal_score), 6)
 
 logger = logging.getLogger(__name__)
 

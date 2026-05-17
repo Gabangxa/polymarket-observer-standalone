@@ -157,35 +157,49 @@ class TestBackoffRetry:
 # ── _size_from_signal ─────────────────────────────────────────────────────────
 
 class TestSizeFromSignal:
-    """_size_from_signal does `import db as _db` locally; patch the db module directly."""
+    """
+    _size_from_signal does `import db as _db` locally; patch the db module
+    directly. Per-position cap now comes from db.get_max_position_pct() so
+    the dashboard setting actually controls sizing.
+    """
 
     def test_kelly_fraction_capped_at_position_pct(self):
-        # bankroll=1000, MAX_POSITION_PCT=0.10 → cap=100. Kelly=0.5 → 500 → capped at 100.
+        # bankroll=1000, dashboard cap=0.10 → cap=100. Kelly=0.5 → 500 → capped at 100.
         signal = {"metadata": {"kelly_fraction": 0.5}}
         with patch("db.get_bankroll", return_value=1000.0), \
-             patch("config.MAX_POSITION_PCT", 0.10):
+             patch("db.get_max_position_pct", return_value=0.10):
             size = om._size_from_signal(signal, "BUY")
         assert size == Decimal("100.00")
 
     def test_kelly_below_cap_uses_kelly(self):
         signal = {"metadata": {"kelly_fraction": 0.05}}
         with patch("db.get_bankroll", return_value=1000.0), \
-             patch("config.MAX_POSITION_PCT", 0.10):
+             patch("db.get_max_position_pct", return_value=0.10):
             size = om._size_from_signal(signal, "BUY")
         assert size == Decimal("50.00")
 
     def test_no_kelly_uses_full_cap(self):
         signal = {"metadata": {}}
         with patch("db.get_bankroll", return_value=1000.0), \
-             patch("config.MAX_POSITION_PCT", 0.10):
+             patch("db.get_max_position_pct", return_value=0.10):
             size = om._size_from_signal(signal, "BUY")
         assert size == Decimal("100.00")
+
+    def test_dashboard_cap_overrides_static_default(self):
+        # Dashboard set per-position to 36% — sizing must respect that, not
+        # the 10% static config default.
+        signal = {"metadata": {"kelly_fraction": 0.25}}  # ¼ Kelly at score=1.0
+        with patch("db.get_bankroll", return_value=30.0), \
+             patch("db.get_max_position_pct", return_value=0.36):
+            size = om._size_from_signal(signal, "BUY")
+        # raw = 30 * 0.25 = 7.50 ; cap = 30 * 0.36 = 10.80 ; min = 7.50
+        assert size == Decimal("7.50")
 
     def test_below_min_returns_zero(self):
         # bankroll=10, cap=1 → below _MIN_ORDER_USDC=5.0 → 0
         signal = {"metadata": {}}
         with patch("db.get_bankroll", return_value=10.0), \
-             patch("config.MAX_POSITION_PCT", 0.10):
+             patch("db.get_max_position_pct", return_value=0.10):
             size = om._size_from_signal(signal, "BUY")
         assert size == Decimal("0")
 
@@ -217,7 +231,7 @@ class TestPlaceOrderRouting:
             patch.object(om, "db"),
             patch.object(om, "alerts"),
             patch.object(om, "nats_bus"),
-            patch("config.MAX_POSITION_PCT", 0.10),
+            patch("db.get_max_position_pct", return_value=0.10),
         ]
 
     @staticmethod

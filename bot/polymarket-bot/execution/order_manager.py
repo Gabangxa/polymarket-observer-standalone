@@ -136,18 +136,28 @@ def _size_from_signal(signal: dict, side: str) -> Decimal:
     Compute USDC order size from signal metadata.
 
     Priority:
-      1. Kelly fraction from metadata, capped at MAX_POSITION_PCT * bankroll.
-      2. No Kelly → default to MAX_POSITION_PCT * bankroll (the full cap).
+      1. Kelly fraction from metadata, capped at per_position_pct * bankroll.
+      2. No Kelly → default to per_position_pct * bankroll (the full cap).
+
+    The per-position cap is read from db.get_max_position_pct() on every
+    call so the dashboard's "Per-position cap" setting actually controls
+    sizing. Previously this used the static config.MAX_POSITION_PCT (10%)
+    regardless of what the operator configured — making the dashboard
+    cap decorative.
 
     Returns 0 if the computed size is below _MIN_ORDER_USDC so the caller
     rejects the order cleanly rather than silently exceeding the position cap.
     """
     import db as _db
-    from config import MAX_POSITION_PCT
     bankroll = _db.get_bankroll()
+    try:
+        position_pct = float(_db.get_max_position_pct())
+    except Exception:
+        from config import MAX_POSITION_PCT
+        position_pct = MAX_POSITION_PCT
     metadata = signal.get("metadata") or {}
     kelly_fraction = metadata.get("kelly_fraction")
-    cap = (Decimal(str(bankroll)) * Decimal(str(MAX_POSITION_PCT))).quantize(
+    cap = (Decimal(str(bankroll)) * Decimal(str(position_pct))).quantize(
         Decimal("0.01"), rounding=ROUND_DOWN
     )
 
@@ -160,7 +170,7 @@ def _size_from_signal(signal: dict, side: str) -> Decimal:
     if size < _MIN_ORDER_USDC:
         logger.warning(
             f"Computed size ${size} is below minimum ${_MIN_ORDER_USDC} "
-            f"(bankroll=${bankroll}, cap={MAX_POSITION_PCT*100:.0f}%) — order skipped"
+            f"(bankroll=${bankroll}, cap={position_pct*100:.0f}%) — order skipped"
         )
         return Decimal("0")
 
