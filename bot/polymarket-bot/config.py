@@ -147,6 +147,14 @@ SPREAD_EXIT_FEE_MULTIPLE  = 1.5
 TRAIL_PIPS_TAIL           = 0.005  # 0.5¢ for tail_yield (high-conviction, tight)
 TRAIL_PIPS_SPREAD         = 0.01   # 1¢   for spread_engine
 
+# Exit price floor — refuse to exit into a thin market that has crashed past
+# this giveback fraction relative to avg_cost. Skips the exit attempt and
+# re-evaluates on the next snapshot; if the bid recovers, exit fires later;
+# if it stays below floor, position holds to resolution. Bounds the worst-case
+# slippage on tail markets where the spread can blow out near expiry.
+# Set to 0 to disable the floor (always exit on trigger).
+EXIT_MAX_GIVEBACK_PCT     = 0.05   # default 5% — exit at 0.97 floors at 0.9215
+
 # ── Infrastructure — set in Railway service variables, never in code ──────────
 # BANKROLL_USDC        — USDC allocated to execution  (read above in this file)
 # POLYGON_PRIVATE_KEY  — L1 wallet key               (read in execution/auth.py)
