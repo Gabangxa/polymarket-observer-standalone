@@ -2,11 +2,13 @@ import { motion } from "framer-motion";
 import { Database, AlertCircle } from "lucide-react";
 import { useLiveSnapshots } from "@/hooks/use-polymarket";
 import { TableSkeleton, Badge } from "@/components/ui-elements";
-import { formatRelativeTime, parseNumeric, formatPrice } from "@/lib/utils";
+import { formatRelativeTime, parseNumeric, formatPrice, formatInTz } from "@/lib/utils";
+import { useTimezone } from "@/hooks/use-timezone";
 import { Link } from "wouter";
 
 export default function Snapshots() {
   const { data, isLoading } = useLiveSnapshots({ limit: 100 });
+  const { timezone } = useTimezone();
 
   return (
     <motion.div 
@@ -54,7 +56,7 @@ export default function Snapshots() {
                 data.snapshots.map((snap) => (
                   <tr key={snap.id} className="data-row hover:bg-accent/40">
                     <td className="px-4 py-3 font-mono text-muted-foreground text-xs" title={snap.collectedAt || ""}>
-                      {formatRelativeTime(snap.collectedAt)}
+                      {formatInTz(snap.collectedAt, "MMM dd HH:mm:ss", timezone)}
                     </td>
                     <td className="px-4 py-3 font-medium text-foreground max-w-[300px] truncate">
                       <Link href={`/markets/${snap.marketId}`} className="hover:text-primary transition-colors cursor-pointer">

@@ -320,6 +320,11 @@ _MIGRATIONS = [
       AND exchange_order_id != ''
       AND error_msg ILIKE '%%InvalidColumnReference%%'
     """,
+    # Soft-delete column for dead markets: keeps the row so the dashboard's
+    # LEFT JOIN on orders → markets can still resolve question text after the
+    # market's orderbook is gone. prune_dead_market() sets this; get_watchlist()
+    # filters it out; prune_watchlist() skips already-pruned rows.
+    "ALTER TABLE markets ADD COLUMN IF NOT EXISTS pruned_at TIMESTAMPTZ",
 ]
 
 
@@ -368,6 +373,7 @@ def upsert_markets(watchlist: list[dict]) -> int:
             hours_to_close  = EXCLUDED.hours_to_close,
             fees_enabled    = EXCLUDED.fees_enabled,
             score           = EXCLUDED.score,
+            pruned_at       = NULL,
             updated_at      = NOW()
     """
 
@@ -383,6 +389,7 @@ def get_watchlist() -> list[dict]:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT * FROM markets
+                WHERE pruned_at IS NULL
                 ORDER BY score DESC NULLS LAST
                 LIMIT %s
             """, (MAX_WATCHLIST_SIZE,))
@@ -421,7 +428,7 @@ def prune_watchlist(keep_ids: list[str]) -> int:
             )
             snap_count = cur.rowcount
             cur.execute(
-                "DELETE FROM markets WHERE NOT (market_id = ANY(%s))",
+                "DELETE FROM markets WHERE pruned_at IS NULL AND NOT (market_id = ANY(%s))",
                 (keep_list,),
             )
             market_count = cur.rowcount
@@ -984,7 +991,10 @@ def prune_dead_market(market_id: str) -> None:
                 WHERE market_id = %s
                   AND executed = FALSE
             """, (market_id,))
-            cur.execute("DELETE FROM markets WHERE market_id = %s", (market_id,))
+            cur.execute(
+                "UPDATE markets SET pruned_at = NOW() WHERE market_id = %s",
+                (market_id,),
+            )
     logger.info(f"Pruned dead market {market_id} (orderbook does not exist)")
 
 
