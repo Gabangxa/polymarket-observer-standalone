@@ -968,6 +968,26 @@ def mark_signal_skipped(signal_id: int, reason: str) -> None:
             )
 
 
+def prune_dead_market(market_id: str) -> None:
+    """
+    Remove a market from the watchlist after the CLOB confirmed its orderbook
+    no longer exists. Deletes the market row (so the scanner/collector skip it
+    on the next cycle) and its unexecuted signals (no point retrying them).
+    Snapshots are left intact for calibration history and are pruned by the
+    normal retention policy. Signals with attached orders are preserved for
+    audit / PnL tracking.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                DELETE FROM signals
+                WHERE market_id = %s
+                  AND executed = FALSE
+            """, (market_id,))
+            cur.execute("DELETE FROM markets WHERE market_id = %s", (market_id,))
+    logger.info(f"Pruned dead market {market_id} (orderbook does not exist)")
+
+
 def get_executable_signals(
     min_score: float,
     strategies: list[str],
@@ -988,6 +1008,7 @@ def get_executable_signals(
                   AND s.signal_score >= %(min_score)s
                   AND s.strategy = ANY(%(strategies)s)
                   AND s.emitted_at > NOW() - (%(max_age_secs)s * INTERVAL '1 second')
+                  AND (m.end_date IS NULL OR m.end_date > NOW())
                 ORDER BY s.signal_score DESC
                 LIMIT %(limit)s
             """, {

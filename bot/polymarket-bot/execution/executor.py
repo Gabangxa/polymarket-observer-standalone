@@ -104,6 +104,16 @@ def _process_signals(client) -> int:
         if skip_reason and signal_id:
             db.mark_signal_skipped(signal_id, skip_reason)
 
+        # The CLOB told us this orderbook is gone — remove the market from the
+        # watchlist so the scanner, collector, and engines stop visiting it.
+        # Stale unexecuted signals for the market are also deleted so they don't
+        # clog the queue.
+        if skip_reason == "orderbook_not_found" and signal.get("market_id"):
+            try:
+                db.prune_dead_market(signal["market_id"])
+            except Exception as _e:
+                logger.warning(f"prune_dead_market failed for {signal['market_id']}: {_e}")
+
     return placed
 
 
@@ -127,6 +137,8 @@ def _classify_skip_reason(err: str) -> str | None:
         return "unknown_strategy"
     if "computed size is zero" in lower:
         return "bankroll_not_set"
+    if "does not exist" in lower:
+        return "orderbook_not_found"
     return None
 
 
