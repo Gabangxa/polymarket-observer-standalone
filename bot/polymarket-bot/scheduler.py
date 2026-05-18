@@ -9,7 +9,9 @@
 
 import logging
 import os
+import signal
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -32,8 +34,67 @@ import alerts
 # Refresh watchlist every N runs  (default: every 12 runs ≈ 6min at 30s interval)
 SCAN_INTERVAL_RUNS = 12
 
+# Bound the graceful-shutdown cancel attempt. Railway sends SIGTERM and waits
+# ~10s before SIGKILL — leave 2s of headroom so the process exits cleanly.
+SHUTDOWN_CANCEL_TIMEOUT_SECS = 8.0
+
+_shutdown_requested = threading.Event()
+
+
+def _graceful_shutdown(signum, frame):
+    """
+    Cancel every open CLOB order before the process exits. Without this,
+    GTD orders remain live on the CLOB through a Railway deploy/restart and
+    new signals on the next boot can stack additional exposure against the
+    same bankroll — temporary over-exposure beyond MAX_PORTFOLIO_PCT until
+    the reconciler catches drift ~5 min later.
+    """
+    if _shutdown_requested.is_set():
+        logger.warning(f"Second shutdown signal ({signum}) received — exiting immediately")
+        sys.exit(1)
+    _shutdown_requested.set()
+    logger.warning(f"Shutdown signal ({signum}) received — cancelling open orders")
+
+    if not os.environ.get("POLYGON_PRIVATE_KEY"):
+        logger.warning("No POLYGON_PRIVATE_KEY — nothing to cancel, exiting")
+        sys.exit(0)
+
+    result = {"summary": None, "error": None}
+    done = threading.Event()
+
+    def _do_cancel():
+        try:
+            from execution.auth import get_client
+            from execution.order_manager import cancel_all_open_orders
+            result["summary"] = cancel_all_open_orders(get_client())
+        except Exception as e:
+            result["error"] = repr(e)
+        finally:
+            done.set()
+
+    t = threading.Thread(target=_do_cancel, daemon=True, name="shutdown-cancel")
+    t.start()
+
+    if done.wait(timeout=SHUTDOWN_CANCEL_TIMEOUT_SECS):
+        if result["error"]:
+            logger.error(f"Shutdown cancel failed: {result['error']}")
+        else:
+            logger.warning(f"Shutdown cancel summary: {result['summary']}")
+    else:
+        logger.error(
+            f"Shutdown cancel timed out after {SHUTDOWN_CANCEL_TIMEOUT_SECS}s — "
+            "orders may remain open; reconciler will catch on restart"
+        )
+
+    sys.exit(0)
+
 
 def main():
+    # Register shutdown handlers before any thread or client init so a SIGTERM
+    # during startup still triggers cancel-all.
+    signal.signal(signal.SIGTERM, _graceful_shutdown)
+    signal.signal(signal.SIGINT, _graceful_shutdown)
+
     # Import here so logging is configured first
     from server import start_server
     from main import run_pipeline
