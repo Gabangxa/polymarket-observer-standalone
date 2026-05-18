@@ -30,7 +30,10 @@ logger = logging.getLogger(__name__)
 
 # Orders stuck in SENT or PENDING_SUBMISSION past this threshold are considered
 # zombies — the original submission flow didn't complete, retry won't help.
-_ZOMBIE_AGE_MINS = 15
+# Configurable so peak CLOB latency (e.g. major sports event resolution) doesn't
+# falsely classify slow-but-valid submissions as dead. Set RECONCILER_ZOMBIE_CUTOFF_MINS
+# to override the 30min default.
+_ZOMBIE_AGE_MINS = int(os.environ.get("RECONCILER_ZOMBIE_CUTOFF_MINS", "30"))
 
 # Per-token drift tolerance (shares). Fills round share quantities to 4dp;
 # anything below this is dust from successive partial fills and rounding.
@@ -121,13 +124,29 @@ def reconcile_orders(client) -> dict:
             reconciled += 1
 
     # Zombies: PENDING_SUBMISSION / SENT or missing-EOI orders stuck past threshold.
-    # The original submission never completed — close them out so the signal queue clears.
+    # Before declaring them dead, try one last CLOB lookup for any zombie that
+    # already has an exchange_order_id — a slow ACK that arrived after the
+    # bulk get_orders() but before this loop would otherwise be wrongly REJECTED.
+    # On confirmed-missing or no EOI: mark REJECTED so the signal queue clears.
+    zombies      = 0
+    zombie_saved = 0
     for o in buckets["zombie"]:
+        eoi = o.get("exchange_order_id")
+        if eoi:
+            try:
+                order_manager.poll_order_status(o, client)
+                zombie_saved += 1
+                continue
+            except Exception as e:
+                logger.info(
+                    f"reconcile_orders: zombie re-check failed for "
+                    f"clord_id={o.get('clord_id')} eoi={eoi}: {e} — marking REJECTED"
+                )
         db.update_order_status(
             o["clord_id"], "REJECTED",
             error_msg=f"reconciler: zombie ({o.get('status')}, no progress in {_ZOMBIE_AGE_MINS}min)",
         )
-    zombies = len(buckets["zombie"])
+        zombies += 1
 
     # Orphans: CLOB has an order we never recorded. Could be a manual order, a
     # cross-deployment leftover, or a serious replay bug. Don't auto-cancel —
@@ -148,17 +167,19 @@ def reconcile_orders(client) -> dict:
         alerts.reconciler_orphans(orphans)
 
     summary = {
-        "db_open":     len(db_orders),
-        "clob_open":   len(clob_orders),
-        "in_sync":     len(buckets["in_sync"]),
-        "reconciled":  reconciled,
-        "zombies":     zombies,
-        "orphans":     len(orphans),
+        "db_open":      len(db_orders),
+        "clob_open":    len(clob_orders),
+        "in_sync":      len(buckets["in_sync"]),
+        "reconciled":   reconciled,
+        "zombies":      zombies,
+        "zombie_saved": zombie_saved,
+        "orphans":      len(orphans),
     }
     logger.info(
         f"reconcile_orders: db={summary['db_open']} clob={summary['clob_open']} "
         f"in_sync={summary['in_sync']} reconciled={summary['reconciled']} "
-        f"zombies={summary['zombies']} orphans={summary['orphans']}"
+        f"zombies={summary['zombies']} zombie_saved={summary['zombie_saved']} "
+        f"orphans={summary['orphans']}"
     )
     return summary
 
