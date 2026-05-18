@@ -33,7 +33,14 @@ _client_lock = threading.Lock()
 
 CHAIN_ID      = int(os.environ.get("POLYMARKET_CHAIN_ID", "137"))
 CLOB_HOST     = "https://clob.polymarket.com"
-SIG_TYPE      = int(os.environ.get("POLYMARKET_SIGNATURE_TYPE", "1"))
+# POLYMARKET_SIGNATURE_TYPE has no default. Setting the wrong value is a silent
+# money leak: orders sign with the wrong contract address, the CLOB rejects
+# them as "signature" errors (non-retryable → signal marked executed → no
+# recovery). Most new polymarket.com accounts are sig_type 3 (POLY_1271);
+# legacy proxy accounts are 1; Gnosis Safe accounts are 2; EOAs are 0. Force
+# the operator to declare it explicitly — see get_client() for validation.
+_SIG_TYPE_RAW = os.environ.get("POLYMARKET_SIGNATURE_TYPE")
+SIG_TYPE      = int(_SIG_TYPE_RAW) if _SIG_TYPE_RAW is not None else None
 FUNDER        = os.environ.get("POLYMARKET_FUNDER", "")
 
 
@@ -66,6 +73,13 @@ def get_client():
                 "Add it to requirements.txt: py-clob-client-v2>=1.0.1"
             ) from e
 
+        if SIG_TYPE is None:
+            raise RuntimeError(
+                "POLYMARKET_SIGNATURE_TYPE env var is not set. "
+                "Set it explicitly in Railway service variables: "
+                "0=EOA, 1=POLY_PROXY, 2=POLY_GNOSIS_SAFE, 3=POLY_1271 (Deposit Wallet — "
+                "default for new polymarket.com accounts)."
+            )
         if SIG_TYPE not in (0, 1, 2, 3):
             raise RuntimeError(
                 f"POLYMARKET_SIGNATURE_TYPE={SIG_TYPE} is not a valid value. "
