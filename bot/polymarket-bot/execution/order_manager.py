@@ -22,13 +22,6 @@ _BACKOFF_BASE   = 1.0
 _BACKOFF_CAP    = 30.0
 _GTD_BUFFER_SECS = 60   # Polymarket enforces: expiration must be > now + 60s
 
-# Minimum economic order size (in USDC). Orders sized below this are skipped
-# rather than bumped up — bumping would silently violate the position cap.
-# Floor raised above the CLOB's $1 hard minimum because sub-$5 trades cannot
-# recover round-trip costs (Polygon gas + spread + slippage) and only pollute
-# the calibration log with tick-rounding wins/losses.
-_MIN_ORDER_USDC = Decimal("5.0")
-
 # Tick size cache: token_id → Decimal tick size.
 # Polymarket markets use either 0.01 or 0.001; wrong precision → "Invalid order inputs".
 _TICK_CACHE: dict[str, Decimal] = {}
@@ -190,17 +183,13 @@ def _size_from_signal(signal: dict, side: str) -> Decimal:
       1. Kelly fraction from metadata, capped at per_position_pct * bankroll.
       2. No Kelly → default to per_position_pct * bankroll (the full cap).
 
-    The per-position cap is read from db.get_max_position_pct() on every
-    call so the dashboard's "Per-position cap" setting actually controls
-    sizing. Previously this used the static config.MAX_POSITION_PCT (10%)
-    regardless of what the operator configured — making the dashboard
-    cap decorative.
-
-    Returns 0 if the computed size is below _MIN_ORDER_USDC so the caller
-    rejects the order cleanly rather than silently exceeding the position cap.
+    Returns 0 only when the bankroll is unset or the computed size rounds to zero.
+    Sub-minimum sizes are submitted as-is and let the CLOB enforce its own floor.
     """
     import db as _db
     bankroll = _db.get_bankroll()
+    if bankroll <= 0:
+        return Decimal("0")
     try:
         position_pct = float(_db.get_max_position_pct())
     except Exception:
@@ -217,13 +206,6 @@ def _size_from_signal(signal: dict, side: str) -> Decimal:
         size = min(raw, cap).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
     else:
         size = cap
-
-    if size < _MIN_ORDER_USDC:
-        logger.warning(
-            f"Computed size ${size} is below minimum ${_MIN_ORDER_USDC} "
-            f"(bankroll=${bankroll}, cap={position_pct*100:.0f}%) — order skipped"
-        )
-        return Decimal("0")
 
     return size
 
@@ -346,7 +328,13 @@ def _place_neg_risk_legs(signal: dict, client) -> dict:
                 exchange_order_id=exchange_order_id,
                 working_qty=float(size_shares),
             )
-            db.upsert_position(market_id, token_id, "YES", delta_working_buy=float(size_shares))
+            try:
+                db.upsert_position(market_id, token_id, "YES", delta_working_buy=float(size_shares))
+            except Exception as _pe:
+                logger.error(
+                    f"Position update failed (neg-risk leg remains OPEN on CLOB) "
+                    f"| clord_id={clord_id} | {_pe}"
+                )
 
             if first_clord_id is None:
                 first_clord_id = clord_id
@@ -454,7 +442,12 @@ def _place_neg_risk_maker_legs(signal: dict, client) -> dict:
             continue
 
         # Mark working_sell before touching the CLOB
-        db.upsert_position(market_id, yes_token_id, "YES", delta_working_sell=float(size_shares))
+        try:
+            db.upsert_position(market_id, yes_token_id, "YES", delta_working_sell=float(size_shares))
+        except Exception as _pe:
+            logger.error(
+                f"Position pre-update failed (maker leg) | clord_id={clord_id} | {_pe}"
+            )
 
         try:
             from py_clob_client_v2.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
@@ -505,7 +498,10 @@ def _place_neg_risk_maker_legs(signal: dict, client) -> dict:
                 clord_id, "REJECTED",
                 error_msg=f"{detail} | sent={summary}",
             )
-            db.upsert_position(market_id, yes_token_id, "YES", delta_working_sell=-float(size_shares))
+            try:
+                db.upsert_position(market_id, yes_token_id, "YES", delta_working_sell=-float(size_shares))
+            except Exception as _pe:
+                logger.error(f"Position rollback failed | clord_id={clord_id} | {_pe}")
 
     ok = legs_placed == legs_total
     if legs_placed > 0 and not ok:
@@ -642,11 +638,19 @@ def place_order(signal: dict, client, reprice_of: int = None) -> dict:
             exchange_order_id=exchange_order_id,
             working_qty=float(size_shares),
         )
-        # Record working qty in positions table
-        db.upsert_position(
-            market_id, token_id, "YES",
-            delta_working_buy=float(size_shares),
-        )
+        # Record working qty in positions table. A failure here must NOT mark the
+        # order as REJECTED — the order is live on the CLOB. Log and continue;
+        # reconcile_positions() will detect and alert on the position drift.
+        try:
+            db.upsert_position(
+                market_id, token_id, "YES",
+                delta_working_buy=float(size_shares),
+            )
+        except Exception as _pe:
+            logger.error(
+                f"Position update failed (order remains OPEN on CLOB) | "
+                f"clord_id={clord_id} | {_pe}"
+            )
 
         logger.info(
             f"Order placed | clord_id={clord_id} | exchange_id={exchange_order_id} | "
@@ -871,7 +875,10 @@ def place_exit_order(position: dict, price: float, client) -> dict:
         return {"ok": False, "clord_id": clord_id, "error": f"db error: {e}"}
 
     # Record working sell quantity before touching the CLOB
-    db.upsert_position(market_id, token_id, "YES", delta_working_sell=float(size_shares))
+    try:
+        db.upsert_position(market_id, token_id, "YES", delta_working_sell=float(size_shares))
+    except Exception as _pe:
+        logger.error(f"Position pre-update failed (exit order) | clord_id={clord_id} | {_pe}")
 
     try:
         from py_clob_client_v2.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
@@ -929,7 +936,10 @@ def place_exit_order(position: dict, price: float, client) -> dict:
             error_msg=f"{detail} | sent={summary}",
         )
         # Undo working_sell delta so position state stays accurate
-        db.upsert_position(market_id, token_id, "YES", delta_working_sell=-float(size_shares))
+        try:
+            db.upsert_position(market_id, token_id, "YES", delta_working_sell=-float(size_shares))
+        except Exception as _pe:
+            logger.error(f"Position rollback failed (exit order) | clord_id={clord_id} | {_pe}")
         return {"ok": False, "clord_id": clord_id, "error": detail}
 
 

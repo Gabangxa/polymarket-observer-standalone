@@ -117,8 +117,6 @@ def _classify_skip_reason(err: str) -> str | None:
     if not err:
         return None
     lower = err.lower()
-    if "computed size is zero" in lower or "below minimum" in lower:
-        return "size_below_floor"
     if "missing token_id" in lower or "no token_id" in lower:
         return "missing_token_id"
     if "missing yes_price" in lower or "missing yes_ask" in lower:
@@ -127,6 +125,8 @@ def _classify_skip_reason(err: str) -> str | None:
         return "price_at_min_tick"
     if "no order logic" in lower:
         return "unknown_strategy"
+    if "computed size is zero" in lower:
+        return "bankroll_not_set"
     return None
 
 

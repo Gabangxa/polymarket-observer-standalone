@@ -51,13 +51,24 @@ def check(signal: dict) -> tuple[bool, str]:
     if signal_id and db.order_exists_for_signal(signal_id):
         return False, f"order already exists for signal_id={signal_id}"
 
+    # Gate 4.5: token-level duplicate — block a second order on the same outcome
+    # token even when triggered by a different signal. Catches the scenario where
+    # multiple scan-cycle signals fire for the same market before the first order
+    # has been recorded as executed (e.g. positions table was empty due to upsert
+    # failure, or a reprice created a second signal for the same token).
+    token_ids = signal.get("token_ids") or []
+    if token_ids and db.order_exists_for_token(token_ids[0]):
+        return False, (
+            f"live or filled order already exists for token_id={token_ids[0][:16]}… "
+            f"— one position per outcome token"
+        )
+
     # Gate 5: total portfolio exposure cap
     approved, reason = _check_portfolio_exposure(bankroll)
     if not approved:
         return False, reason
 
     # Gate 6: per-position exposure headroom
-    token_ids = signal.get("token_ids") or []
     if token_ids:
         approved, reason = _check_position_exposure(market_id, token_ids[0], bankroll)
         if not approved:

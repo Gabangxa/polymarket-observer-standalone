@@ -148,19 +148,21 @@ CREATE INDEX IF NOT EXISTS snapshots_market_collected
     ON snapshots (market_id, collected_at DESC);
 
 CREATE TABLE IF NOT EXISTS signals (
-    id              BIGSERIAL PRIMARY KEY,
-    strategy        TEXT NOT NULL,
-    market_id       TEXT,
-    event_slug      TEXT,
-    signal_score    NUMERIC,
-    metadata        JSONB,
-    emitted_at      TIMESTAMPTZ DEFAULT NOW(),
+    id                   BIGSERIAL PRIMARY KEY,
+    strategy             TEXT NOT NULL,
+    market_id            TEXT,
+    event_slug           TEXT,
+    signal_score         NUMERIC,
+    metadata             JSONB,
+    emitted_at           TIMESTAMPTZ DEFAULT NOW(),
     -- Phase 4: paper trade fields (null until tracked)
-    entry_price     NUMERIC,
-    exit_price      NUMERIC,
-    pnl             NUMERIC,
-    resolved        BOOLEAN DEFAULT FALSE,
-    outcome         BOOLEAN
+    entry_price          NUMERIC,
+    exit_price           NUMERIC,
+    pnl                  NUMERIC,
+    resolved             BOOLEAN DEFAULT FALSE,
+    outcome              BOOLEAN,
+    executed             BOOLEAN DEFAULT FALSE,
+    executed_skip_reason TEXT
 );
 
 CREATE INDEX IF NOT EXISTS signals_strategy_emitted
@@ -174,18 +176,6 @@ ALTER TABLE signals ADD COLUMN IF NOT EXISTS outcome BOOLEAN;
 ALTER TABLE markets ADD COLUMN IF NOT EXISTS category TEXT;
 ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS yes_ask NUMERIC;
 ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS no_ask NUMERIC;
-
--- Dedup constraint: one signal per (strategy, market/event, clock-hour).
--- COALESCE(market_id, event_slug) covers both per-market signals (market_id set)
--- and per-event signals like neg_risk_overround (market_id NULL, event_slug set).
--- This replaces the application-level check+insert two-connection pattern with a
--- single atomic INSERT ... ON CONFLICT DO NOTHING.
-CREATE UNIQUE INDEX IF NOT EXISTS signals_dedup_hourly
-    ON signals (
-        strategy,
-        COALESCE(market_id, event_slug),
-        date_trunc('hour', emitted_at AT TIME ZONE 'UTC')
-    );
 
 -- Execution tracking
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS executed BOOLEAN DEFAULT FALSE;
@@ -257,11 +247,18 @@ CREATE TABLE IF NOT EXISTS bot_config (
 
 def init_schema() -> None:
     """Create tables if they don't exist. Safe to call on every startup."""
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(SCHEMA_SQL)
-    # Run additive migrations in separate transactions so an index failure
-    # cannot roll back the column additions above.
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(SCHEMA_SQL)
+    except Exception as e:
+        # A failed SCHEMA_SQL (e.g. a non-IMMUTABLE functional index on an existing
+        # deployment) must not prevent migrations from running. Migrations run in
+        # separate transactions and add columns / indexes that the SCHEMA_SQL
+        # CREATE TABLE IF NOT EXISTS cannot retroactively apply to existing tables.
+        logger.warning(f"SCHEMA_SQL partial failure (migrations will still run): {e}")
+    # Always run migrations — even if SCHEMA_SQL failed above. Each migration is
+    # independent, idempotent, and catches its own errors.
     _run_migrations()
     logger.info("Database schema ready")
 
@@ -305,6 +302,24 @@ _MIGRATIONS = [
     # rolled back (IMMUTABLE index error) so the constraint was never retroactively added.
     # _run_migrations catches the error if the constraint already exists — safe to re-run.
     "ALTER TABLE positions ADD CONSTRAINT positions_unique_market_token_side UNIQUE (market_id, token_id, side)",
+    # Idempotent fallback: create the unique index directly if the ALTER TABLE above
+    # failed (constraint name conflict, duplicate rows, etc.). A unique index satisfies
+    # ON CONFLICT just as well as a named constraint. IF NOT EXISTS makes this safe to
+    # run on every startup.
+    "CREATE UNIQUE INDEX IF NOT EXISTS positions_unique_mts ON positions (market_id, token_id, side)",
+    # Recovery: orders that were successfully placed on the CLOB but then had their
+    # status overwritten to REJECTED because upsert_position raised InvalidColumnReference
+    # (missing positions UNIQUE constraint). They have a real exchange_order_id set and
+    # are genuinely open on the exchange. Restore to OPEN so poll_order_status can
+    # track their fills and the exit manager can manage them.
+    """
+    UPDATE orders
+    SET status = 'OPEN'
+    WHERE status = 'REJECTED'
+      AND exchange_order_id IS NOT NULL
+      AND exchange_order_id != ''
+      AND error_msg ILIKE '%%InvalidColumnReference%%'
+    """,
 ]
 
 
@@ -614,11 +629,17 @@ def insert_signal(signal: dict) -> int:
             cur.execute("""
                 INSERT INTO signals (
                     strategy, market_id, event_slug, signal_score, metadata, emitted_at
-                ) VALUES (
-                    %(strategy)s, %(market_id)s, %(event_slug)s,
-                    %(signal_score)s, %(metadata)s, NOW()
                 )
-                ON CONFLICT DO NOTHING
+                SELECT %(strategy)s, %(market_id)s, %(event_slug)s,
+                       %(signal_score)s, %(metadata)s, NOW()
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM signals
+                    WHERE strategy = %(strategy)s
+                      AND COALESCE(market_id, event_slug)
+                            IS NOT DISTINCT FROM
+                          COALESCE(%(market_id)s::text, %(event_slug)s::text)
+                      AND emitted_at > NOW() - INTERVAL '1 hour'
+                )
                 RETURNING id
             """, row)
             result = cur.fetchone()
@@ -889,6 +910,26 @@ def order_exists_for_signal(signal_id: int) -> bool:
                 "SELECT 1 FROM orders WHERE signal_id = %s LIMIT 1",
                 (signal_id,),
             )
+            return cur.fetchone() is not None
+
+
+def order_exists_for_token(token_id: str) -> bool:
+    """
+    Return True if any live or filled order already exists for this token.
+    Used by the pre-trade gate to block a second order on the same outcome token
+    even when that second order is triggered by a different signal.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT 1 FROM orders
+                WHERE token_id = %s
+                  AND status IN (
+                      'PENDING_SUBMISSION', 'SENT', 'OPEN',
+                      'PARTIALLY_FILLED', 'FILLED'
+                  )
+                LIMIT 1
+            """, (token_id,))
             return cur.fetchone() is not None
 
 
