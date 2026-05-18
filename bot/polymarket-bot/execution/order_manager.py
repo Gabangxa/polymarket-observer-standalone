@@ -22,13 +22,19 @@ _BACKOFF_BASE   = 1.0
 _BACKOFF_CAP    = 30.0
 _GTD_BUFFER_SECS = 60   # Polymarket enforces: expiration must be > now + 60s
 
-# Tick size cache: token_id → Decimal tick size.
+# Tick size cache: token_id → (Decimal tick, fetched_at unix-secs).
 # Polymarket markets use either 0.01 or 0.001; wrong precision → "Invalid order inputs".
 # Tail markets (price > 0.96 or < 0.04) use 0.001 tick — exactly the regime
 # tail_yield_engine targets, so silently defaulting to 0.01 would leak edge
 # (e.g. fair=0.987 → submitted at 0.98) and trigger non-retryable rejections.
 # Fail closed instead — callers handle the exception and skip this cycle.
-_TICK_CACHE: dict[str, Decimal] = {}
+#
+# Cache entries expire after _TICK_CACHE_TTL_SECS so that prices crossing the
+# 0.96/0.04 boundary (where Polymarket tightens tick from 0.01 to 0.001) get
+# re-resolved within a bounded window. The cache hit rate stays high — typical
+# strategy cycles touch a token many times per minute — while drift is bounded.
+_TICK_CACHE: dict[str, tuple[Decimal, float]] = {}
+_TICK_CACHE_TTL_SECS = 60.0
 
 
 class TickSizeLookupError(RuntimeError):
@@ -37,16 +43,26 @@ class TickSizeLookupError(RuntimeError):
 
 
 def _tick_dec(client, token_id: str) -> Decimal:
-    if token_id in _TICK_CACHE:
-        return _TICK_CACHE[token_id]
+    cached = _TICK_CACHE.get(token_id)
+    if cached is not None:
+        tick, fetched_at = cached
+        if time.time() - fetched_at < _TICK_CACHE_TTL_SECS:
+            return tick
     try:
         ts = Decimal(str(client.get_tick_size(token_id)))
-        _TICK_CACHE[token_id] = ts
+        _TICK_CACHE[token_id] = (ts, time.time())
         return ts
     except Exception as e:
         raise TickSizeLookupError(
             f"tick size lookup failed for token={token_id[:24]}…: {e}"
         ) from e
+
+
+def _invalidate_tick(token_id: str) -> None:
+    """Drop a tick-cache entry so the next call re-fetches from the CLOB.
+    Use after the CLOB rejects an order with an invalid-tick-size error —
+    the market's tick has likely tightened or loosened across a price boundary."""
+    _TICK_CACHE.pop(token_id, None)
 
 
 def _gtd_expiration(strategy: str) -> int:

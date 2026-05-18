@@ -97,6 +97,28 @@ class TestTickDec:
         # Second call should retry the lookup and succeed
         assert om._tick_dec(client, "tok_d") == Decimal("0.001")
 
+    def test_cache_expires_after_ttl(self):
+        client = MagicMock()
+        client.get_tick_size.side_effect = ["0.01", "0.001"]
+        with patch.object(om.time, "time", return_value=1000.0):
+            assert om._tick_dec(client, "tok_e") == Decimal("0.01")
+        # Within TTL — cache still valid
+        with patch.object(om.time, "time", return_value=1000.0 + om._TICK_CACHE_TTL_SECS - 1):
+            assert om._tick_dec(client, "tok_e") == Decimal("0.01")
+        assert client.get_tick_size.call_count == 1
+        # Past TTL — re-fetch (market may have crossed 0.96/0.04 tick boundary)
+        with patch.object(om.time, "time", return_value=1000.0 + om._TICK_CACHE_TTL_SECS + 1):
+            assert om._tick_dec(client, "tok_e") == Decimal("0.001")
+        assert client.get_tick_size.call_count == 2
+
+    def test_invalidate_tick_forces_refetch(self):
+        client = MagicMock()
+        client.get_tick_size.side_effect = ["0.01", "0.001"]
+        assert om._tick_dec(client, "tok_f") == Decimal("0.01")
+        om._invalidate_tick("tok_f")
+        assert om._tick_dec(client, "tok_f") == Decimal("0.001")
+        assert client.get_tick_size.call_count == 2
+
 
 # ── _is_retryable ─────────────────────────────────────────────────────────────
 
