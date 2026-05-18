@@ -41,6 +41,7 @@ from config import (
     SPREAD_EXIT_FEE_MULTIPLE,
     TRAIL_PIPS_TAIL,
     TRAIL_PIPS_SPREAD,
+    EXIT_MAX_GIVEBACK_PCT,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,13 @@ _enabled = False
 # ── Position index ────────────────────────────────────────────────────────────
 
 def _seed_index() -> int:
-    """Load all open positions (with strategy and end_date) into the in-memory index."""
+    """Load all open positions (with strategy and end_date) into the in-memory index.
+
+    Rehydrates persisted peak_price so trailing stops survive a container
+    restart. Falls back to avg_cost when the column is NULL (legacy rows or
+    positions that never observed a snapshot post-migration) — conservative
+    because peak == avg_cost disarms the trailing stop until profit is shown.
+    """
     positions = db.get_open_positions_with_strategy()
     with _lock:
         _index.clear()
@@ -83,6 +90,8 @@ def _seed_index() -> int:
             if net <= 0:
                 continue
             avg_cost = float(p.get("avg_cost") or 0)
+            persisted_peak = p.get("peak_price")
+            peak = float(persisted_peak) if persisted_peak is not None else avg_cost
             _index[p["market_id"]] = _PositionEntry(
                 market_id=p["market_id"],
                 token_id=p["token_id"],
@@ -90,7 +99,7 @@ def _seed_index() -> int:
                 avg_cost=avg_cost,
                 net_shares=net,
                 strategy=p.get("strategy") or "",
-                peak_price=avg_cost,   # conservative: assume no upside seen yet
+                peak_price=peak,
                 end_date=p.get("end_date"),
                 neg_risk=bool(p.get("neg_risk", False)),
             )
@@ -215,6 +224,7 @@ def _on_snapshot(subject: str, data: dict) -> None:
         return
     current_price = float(yes_price)
 
+    peak_changed = False
     with _lock:
         entry = _index.get(market_id)
         if entry is None or entry.exit_pending:
@@ -222,8 +232,18 @@ def _on_snapshot(subject: str, data: dict) -> None:
         # Ratchet peak upward (never let it fall)
         if current_price > entry.peak_price:
             entry.peak_price = current_price
+            peak_changed = True
         # Shallow copy for evaluation outside the lock
         snapshot = _PositionEntry(**entry.__dict__)
+
+    # Persist the ratchet so a container restart doesn't reset the trailing
+    # stop. Best-effort: a DB failure shouldn't block the exit evaluation —
+    # the in-memory peak is still updated and reconciler will detect drift.
+    if peak_changed:
+        try:
+            db.update_peak_price(market_id, snapshot.token_id, snapshot.side, current_price)
+        except Exception as e:
+            logger.warning(f"peak_price persist failed | market={market_id}: {e}")
 
     # Evaluate exit condition (no lock held during computation)
     strategy     = snapshot.strategy
@@ -241,6 +261,21 @@ def _on_snapshot(subject: str, data: dict) -> None:
 
     if not should_exit:
         return
+
+    # Giveback floor — refuse to exit into a thin market that has crashed past
+    # EXIT_MAX_GIVEBACK_PCT of avg_cost. Position holds to next snapshot; if the
+    # bid recovers, exit fires later. If price stays below floor, holding to
+    # resolution is the better-EV path on a binary outcome anyway.
+    if EXIT_MAX_GIVEBACK_PCT > 0 and snapshot.avg_cost > 0:
+        floor = snapshot.avg_cost * (1.0 - EXIT_MAX_GIVEBACK_PCT)
+        if current_price < floor:
+            logger.warning(
+                f"Exit skipped — below giveback floor | market={market_id} | "
+                f"strategy={strategy} | price={current_price:.4f} < floor={floor:.4f} "
+                f"(avg_cost={snapshot.avg_cost:.4f}, max_giveback={EXIT_MAX_GIVEBACK_PCT:.0%}) "
+                f"| trigger={reason}"
+            )
+            return
 
     # Mark pending before any I/O to prevent re-entry on the next snapshot
     with _lock:
@@ -294,8 +329,19 @@ def _on_fill(subject: str, data: dict) -> None:
             if net <= 0:
                 _index.pop(market_id, None)
                 return
-            existing      = _index.get(market_id)
-            avg_cost      = float(p.get("avg_cost") or 0)
+            existing       = _index.get(market_id)
+            avg_cost       = float(p.get("avg_cost") or 0)
+            persisted_peak = p.get("peak_price")
+            # Preference order for peak on refresh:
+            #   1. existing in-memory peak (the live ratchet, freshest signal)
+            #   2. persisted peak_price (rehydration after restart)
+            #   3. avg_cost (no peak observed yet — conservative, trailing stop off)
+            if existing is not None:
+                peak = existing.peak_price
+            elif persisted_peak is not None:
+                peak = float(persisted_peak)
+            else:
+                peak = avg_cost
             _index[market_id] = _PositionEntry(
                 market_id=p["market_id"],
                 token_id=p["token_id"],
@@ -303,8 +349,7 @@ def _on_fill(subject: str, data: dict) -> None:
                 avg_cost=avg_cost,
                 net_shares=net,
                 strategy=p.get("strategy") or "",
-                # Preserve running state; fall back to avg_cost on first-ever entry
-                peak_price   = existing.peak_price if existing else avg_cost,
+                peak_price   = peak,
                 end_date     = existing.end_date   if existing else p.get("end_date"),
                 exit_pending = existing.exit_pending if existing else False,
                 neg_risk     = bool(p.get("neg_risk", False)),

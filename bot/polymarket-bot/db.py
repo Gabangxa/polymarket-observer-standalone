@@ -222,18 +222,24 @@ CREATE INDEX IF NOT EXISTS orders_reprice_candidates
     WHERE status = 'CANCELED' AND repriced = FALSE;
 
 CREATE TABLE IF NOT EXISTS positions (
-    id            BIGSERIAL PRIMARY KEY,
-    market_id     TEXT NOT NULL,
-    token_id      TEXT NOT NULL,
-    side          TEXT NOT NULL,
-    total_bought  NUMERIC DEFAULT 0,
-    total_sold    NUMERIC DEFAULT 0,
-    working_buy   NUMERIC DEFAULT 0,
-    working_sell  NUMERIC DEFAULT 0,
-    avg_cost      NUMERIC,
-    pnl_realized  NUMERIC DEFAULT 0,
-    pnl_open      NUMERIC DEFAULT 0,
-    last_updated  TIMESTAMPTZ DEFAULT NOW(),
+    id                BIGSERIAL PRIMARY KEY,
+    market_id         TEXT NOT NULL,
+    token_id          TEXT NOT NULL,
+    side              TEXT NOT NULL,
+    total_bought      NUMERIC DEFAULT 0,
+    total_sold        NUMERIC DEFAULT 0,
+    working_buy       NUMERIC DEFAULT 0,
+    working_sell      NUMERIC DEFAULT 0,
+    avg_cost          NUMERIC,
+    pnl_realized      NUMERIC DEFAULT 0,
+    pnl_open          NUMERIC DEFAULT 0,
+    -- peak_price: running high-water mark since entry; read by exit_manager's
+    -- trailing-stop logic. Persisted so the peak survives container restarts
+    -- (previously in-memory only — restart reset peak to avg_cost and disarmed
+    -- any trailing stops that should have already been triggered).
+    peak_price        NUMERIC,
+    peak_observed_at  TIMESTAMPTZ,
+    last_updated      TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (market_id, token_id, side)
 );
 
@@ -325,6 +331,11 @@ _MIGRATIONS = [
     # market's orderbook is gone. prune_dead_market() sets this; get_watchlist()
     # filters it out; prune_watchlist() skips already-pruned rows.
     "ALTER TABLE markets ADD COLUMN IF NOT EXISTS pruned_at TIMESTAMPTZ",
+    # peak_price persistence so exit_manager's trailing stops survive restarts.
+    # NULL on existing rows means "no peak observed yet" — _seed_index falls
+    # back to avg_cost (conservative; no profit yet ⇒ no trailing stop arms).
+    "ALTER TABLE positions ADD COLUMN IF NOT EXISTS peak_price NUMERIC",
+    "ALTER TABLE positions ADD COLUMN IF NOT EXISTS peak_observed_at TIMESTAMPTZ",
 ]
 
 
@@ -1114,6 +1125,30 @@ def upsert_position(
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, params)
+
+
+def update_peak_price(market_id: str, token_id: str, side: str, peak: float) -> None:
+    """
+    Ratchet positions.peak_price upward to `peak`. Uses GREATEST so concurrent
+    snapshot events from different threads/instances converge to the maximum
+    without race. Only updates peak_observed_at when the peak actually changes.
+    No-op if the row does not exist (a position must be created via
+    upsert_position first).
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE positions
+                SET peak_price = GREATEST(COALESCE(peak_price, 0), %s::numeric),
+                    peak_observed_at = CASE
+                        WHEN %s::numeric > COALESCE(peak_price, 0) THEN NOW()
+                        ELSE peak_observed_at
+                    END
+                WHERE market_id = %s AND token_id = %s AND side = %s
+                """,
+                (peak, peak, market_id, token_id, side),
+            )
 
 
 def get_position(market_id: str, token_id: str, side: str) -> dict | None:
