@@ -7,7 +7,8 @@ const router: IRouter = Router();
 
 const ACTIVE_STATUSES = [
   "PENDING_SUBMISSION",
-  "SUBMITTED",
+  "SENT",              // bot transitions PENDING_SUBMISSION → SENT before CLOB call
+  "OPEN",              // bot transitions SENT → OPEN on CLOB acceptance (primary live state)
   "PARTIALLY_FILLED",
   "CANCEL_REQUESTED",
 ];
@@ -112,7 +113,8 @@ router.get("/orders/analytics", async (req, res) => {
         case "EXPIRED":           s.expired  += n; totals.expired  += n; break;
         case "ERROR":             s.error    += n; totals.error    += n; break;
         case "PENDING_SUBMISSION":
-        case "SUBMITTED":
+        case "SENT":
+        case "OPEN":
         case "PARTIALLY_FILLED":
         case "CANCEL_REQUESTED":  s.active   += n; totals.active   += n; break;
       }
