@@ -24,7 +24,10 @@ def _get(base: str, path: str, params: dict = None) -> Any:
         resp.raise_for_status()
         return resp.json()
     except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP {e.response.status_code} from {url}: {e.response.text[:200]}")
+        if e.response.status_code == 404:
+            logger.debug(f"HTTP 404 from {url}: {e.response.text[:200]}")
+        else:
+            logger.error(f"HTTP {e.response.status_code} from {url}: {e.response.text[:200]}")
         raise
     except httpx.RequestError as e:
         logger.error(f"Request failed for {url}: {e}")
@@ -103,6 +106,41 @@ def get_price(token_id: str, side: str = "buy") -> float | None:
 def get_spread(token_id: str) -> dict:
     """Get spread for a token. Returns {"spread": "value"} only (mid/sell no longer included)."""
     return _get(CLOB_API, "/spread", {"token_id": token_id})
+
+
+def get_spread_or_none(token_id: str) -> tuple[dict | None, bool]:
+    """
+    Returns (spread_dict, is_gone).
+
+      (dict,  False) — got the spread
+      (None,  True)  — orderbook returned 404, market is permanently gone
+      (None,  False) — transient failure (timeout, 5xx). Caller may retry later.
+
+    Mirrors get_midpoint_status() — 404 is expected for resolved markets and
+    is logged at DEBUG, not ERROR, to avoid log floods.
+    """
+    url = f"{CLOB_API}/spread"
+    try:
+        resp = _client.get(url, params={"token_id": token_id})
+    except httpx.RequestError as e:
+        logger.warning(f"spread transport error for {token_id[:20]}…: {e}")
+        return None, False
+
+    if resp.status_code == 404:
+        logger.debug(f"No orderbook for spread {token_id[:20]}… (resolved/delisted)")
+        return None, True
+
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        logger.warning(f"spread HTTP {e.response.status_code} for {token_id[:20]}…: {e.response.text[:120]}")
+        return None, False
+
+    try:
+        return resp.json(), False
+    except Exception as e:
+        logger.warning(f"spread parse error for {token_id[:20]}…: {e}")
+        return None, False
 
 
 def get_orderbook(token_id: str) -> dict:

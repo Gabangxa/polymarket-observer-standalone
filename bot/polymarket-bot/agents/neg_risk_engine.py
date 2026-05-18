@@ -14,9 +14,7 @@ def _analyse_event(event_slug, snapshots):
     if len(snapshots) < NEG_RISK_MIN_OUTCOMES:
         return None
 
-    # Build per-outcome records. Both ask and midpoint must be present and positive —
-    # synthesizing missing legs from partial data produces fictional arbitrages.
-    # A single missing leg invalidates the entire event sum.
+    # Collect priced legs. Track missing counts separately for diagnostics.
     records = []
     missing_ask = 0
     missing_mid = 0
@@ -41,33 +39,34 @@ def _analyse_event(event_slug, snapshots):
             "no_token_id":  token_ids[1] if len(token_ids) > 1 else None,
         })
 
-    # Data-integrity gate: every outcome leg must have complete pricing.
-    # Otherwise the sum is partial and produces phantom arbitrage signals.
-    if missing_ask > 0 or missing_mid > 0 or len(records) != len(snapshots):
+    total_legs   = len(snapshots)
+    priced_legs  = len(records)
+    uncovered    = total_legs - priced_legs
+    all_complete = (uncovered == 0)
+
+    if priced_legs < NEG_RISK_MIN_OUTCOMES:
         logger.info(
-            f"  Skipped {event_slug}: incomplete leg pricing "
-            f"(missing_ask={missing_ask}, missing_mid={missing_mid}, "
-            f"{len(records)}/{len(snapshots)} legs valid)"
+            f"  Skipped {event_slug}: only {priced_legs}/{total_legs} legs priced "
+            f"(missing_ask={missing_ask}, missing_mid={missing_mid}, need ≥{NEG_RISK_MIN_OUTCOMES})"
         )
         return None
 
-    if len(records) < NEG_RISK_MIN_OUTCOMES:
-        return None
-
-    # Taker check: sum of asks < NEG_RISK_TAKER_THRESHOLD → guaranteed profit buying all YES
     sum_asks = sum(r["ask"] for r in records)
-    # Maker check: sum of midpoints > NEG_RISK_MAKER_THRESHOLD → over-round at mid (sell NO)
     sum_mids = sum(r["midpoint"] for r in records)
 
-    is_taker_arb = sum_asks < NEG_RISK_TAKER_THRESHOLD
+    # Taker arb: buy YES on every outcome — one uncovered leg winning = full loss.
+    # Completeness is mandatory: you cannot leave any outcome unhedged.
+    is_taker_arb = all_complete and (sum_asks < NEG_RISK_TAKER_THRESHOLD)
+
+    # Maker arb: sell YES only on the liquid legs you can trade.
+    # An uncovered leg winning is a bonus — you collected all premiums and owe $0 on it.
+    # Partial coverage is valid; only the priced legs need to show over-round.
     is_maker_arb = sum_mids > NEG_RISK_MAKER_THRESHOLD
 
     if not is_taker_arb and not is_maker_arb:
         return None
 
-    # Sanity floor: a credible neg-risk event has sum > 1 - max_overround_seen_in_wild.
-    # A sum < 0.80 across N outcomes that each pay $1 implies stale or missing data
-    # masquerading as arbitrage. Reject these defensively.
+    # Sanity floor for taker: sum < 0.80 → missing data, not real arb.
     if is_taker_arb and sum_asks < 0.80:
         logger.warning(
             f"  Skipped {event_slug}: sum_asks={sum_asks:.4f} below sanity floor 0.80 — "
@@ -75,28 +74,49 @@ def _analyse_event(event_slug, snapshots):
         )
         return None
 
+    # Sanity ceiling for partial-coverage maker: sum > 1.20 with uncovered legs
+    # suggests stale/inflated pricing rather than genuine over-round.
+    if is_maker_arb and not all_complete and sum_mids > 1.20:
+        logger.warning(
+            f"  Skipped {event_slug}: sum_mids={sum_mids:.4f} exceeds ceiling 1.20 "
+            f"with {uncovered} uncovered leg(s) — likely stale data, not real over-round"
+        )
+        return None
+
     n = len(records)
-    # Report the more actionable edge; taker arb (instant fill) takes priority
+    # Taker arb (instant fill) takes priority when both are present
     if is_taker_arb:
-        arb_type  = "taker"
-        total     = sum_asks
-        overround = 1.0 - total     # profit per share set bought
-        ev_side   = "YES (all outcomes, taker)"
-        threshold = NEG_RISK_TAKER_THRESHOLD
-        trigger_note = f"Sum of YES asks = {total:.4f} < {threshold} — buy all YES for guaranteed profit."
+        arb_type     = "taker"
+        total        = sum_asks
+        overround    = 1.0 - total
+        ev_side      = "YES (all outcomes, taker)"
+        threshold    = NEG_RISK_TAKER_THRESHOLD
+        trigger_note = (
+            f"Sum of YES asks = {total:.4f} < {threshold} — "
+            f"buy all {n} YES outcomes for guaranteed profit."
+        )
     else:
         arb_type  = "maker"
         total     = sum_mids
         overround = total - 1.0
-        ev_side   = "YES SELL (all outcomes, maker)"
+        ev_side   = "YES SELL (liquid outcomes, maker)"
         threshold = NEG_RISK_MAKER_THRESHOLD
-        trigger_note = (
-            f"Sum of YES mids = {total:.4f} > {threshold} — "
-            "sell YES on all outcomes. Collect sum(YES_mids) > $1; "
-            "owe exactly $1 at resolution. Profit locked at fill."
-        )
+        if uncovered > 0:
+            trigger_note = (
+                f"Sum of YES mids on {n}/{total_legs} priced legs = {total:.4f} > {threshold} — "
+                f"sell YES on {n} liquid outcomes. "
+                f"{uncovered} unpriced leg(s) winning is a bonus: "
+                f"keep all collected premiums, owe $0."
+            )
+        else:
+            trigger_note = (
+                f"Sum of YES mids = {total:.4f} > {threshold} — "
+                "sell YES on all outcomes. Collect sum(YES_mids) > $1; "
+                "owe exactly $1 at resolution. Profit locked at fill."
+            )
 
-    fair_p = 1.0 / n
+    # fair_p based on total legs so EV accounts for the full outcome space
+    fair_p = 1.0 / total_legs
     ev_per_outcome = [
         round(yes_ev(1.0 - fair_p, 1.0 - r["midpoint"]), 4)
         for r in records
@@ -104,23 +124,26 @@ def _analyse_event(event_slug, snapshots):
     avg_ev = round(sum(ev_per_outcome) / n, 4) if ev_per_outcome else 0.0
 
     return {
-        "strategy":     "neg_risk_overround",
-        "arb_type":     arb_type,
-        "market_id":    None,
-        "event_slug":   event_slug,
-        "num_outcomes": n,
-        "sum_prices":   round(total, 6),
-        "sum_asks":     round(sum_asks, 6),
-        "sum_mids":     round(sum_mids, 6),
-        "overround":    round(overround, 6),
-        "edge_pct":     round(overround * 100, 4),
-        "signal_score": round(overround, 6),
-        "ev":           avg_ev,
-        "ev_side":      ev_side,
-        "sizing_note":  (
+        "strategy":       "neg_risk_overround",
+        "arb_type":       arb_type,
+        "market_id":      None,
+        "event_slug":     event_slug,
+        "num_outcomes":   n,
+        "total_legs":     total_legs,
+        "uncovered_legs": uncovered,
+        "sum_prices":     round(total, 6),
+        "sum_asks":       round(sum_asks, 6),
+        "sum_mids":       round(sum_mids, 6),
+        "overround":      round(overround, 6),
+        "edge_pct":       round(overround * 100, 4),
+        "signal_score":   round(overround, 6),
+        "ev":             avg_ev,
+        "ev_side":        ev_side,
+        "sizing_note":    (
             f"{ev_side} | "
             f"avg EV={avg_ev*100:.1f}% per outcome | "
             f"over-round={overround*100:.2f}c"
+            + (f" | {uncovered}/{total_legs} legs unpriced (bonus if won)" if uncovered > 0 else "")
         ),
         "outcomes": [
             {

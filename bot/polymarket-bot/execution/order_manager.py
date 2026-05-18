@@ -814,8 +814,10 @@ def poll_order_status(order: dict, client) -> None:
 def cancel_order(clord_id: str, exchange_order_id: str, client) -> bool:
     """Cancel an open order. Returns True on success."""
     try:
+        from py_clob_client_v2.clob_types import OrderPayload
+
         def _cancel():
-            return client.cancel(order_id=exchange_order_id)
+            return client.cancel_order(OrderPayload(orderID=exchange_order_id))
         _backoff_retry(_cancel)
         db.update_order_status(
             clord_id, "CANCELED",

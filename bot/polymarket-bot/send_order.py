@@ -86,7 +86,7 @@ def main():
         print(f"WARNING: could not fetch tick size ({e}), using price as-is")
         price_dec = Decimal(str(args.price))
 
-    size_dec = Decimal(str(args.size)).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
+    size_dec = Decimal(str(args.size)).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
 
     opts = PartialCreateOrderOptions(neg_risk=True) if args.neg_risk else None
 

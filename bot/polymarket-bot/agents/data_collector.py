@@ -71,6 +71,17 @@ def _collect_market_snapshot(market, deep: bool = True):
         snapshot["errors"].append("no token_ids")
         return snapshot
 
+    # ── Liveness check — bail early if orderbook is gone (resolved/delisted) ──
+    mid, is_gone = api.get_midpoint_status(yes_token)
+    if is_gone:
+        snapshot["is_gone"] = True
+        return snapshot
+
+    if mid is not None and mid > 0:
+        snapshot["midpoint"]  = mid
+        snapshot["yes_price"] = mid
+        snapshot["no_price"]  = round(1.0 - mid, 6)
+
     # ── Light fields (every run) ──────────────────────────────────────────────
 
     try:
@@ -91,23 +102,13 @@ def _collect_market_snapshot(market, deep: bool = True):
         logger.warning(f"  no_ask failed for {market_id}: {e}")
 
     # /spread only returns {"spread": "value"} — no longer includes mid or sell
-    try:
-        sd = api.get_spread(yes_token)
+    # A 404 here means the orderbook is gone even when midpoint is still cached.
+    sd, spread_gone = api.get_spread_or_none(yes_token)
+    if spread_gone:
+        snapshot["is_gone"] = True
+        return snapshot
+    if sd is not None:
         snapshot["spread"] = float(sd.get("spread", 0)) or None
-    except Exception as e:
-        snapshot["errors"].append(f"spread: {e}")
-        logger.warning(f"  spread failed for {market_id}: {e}")
-
-    # Fetch midpoint separately via /midpoint endpoint
-    try:
-        mid = api.get_midpoint(yes_token)
-        if mid is not None and mid > 0:
-            snapshot["midpoint"]  = mid
-            snapshot["yes_price"] = mid
-            snapshot["no_price"]  = round(1.0 - mid, 6)
-    except Exception as e:
-        snapshot["errors"].append(f"midpoint: {e}")
-        logger.warning(f"  midpoint failed for {market_id}: {e}")
 
     try:
         snapshot["fee_rate_bps"] = api.get_fee_rate(yes_token)
@@ -188,6 +189,10 @@ def run():
             market_id = market.get("market_id", "unknown")
             try:
                 snapshot = future.result()
+                if snapshot.get("is_gone"):
+                    logger.info(f"Pruning dead market {market_id} — orderbook gone")
+                    db.prune_dead_market(market_id)
+                    continue
                 logger.info(f"Collected: {market_id} — {str(market.get('question', ''))[:60]}")
                 db.insert_snapshot(snapshot)
                 if snapshot["errors"]:

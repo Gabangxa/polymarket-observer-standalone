@@ -92,7 +92,7 @@ MICRO_EVENT_KEYWORDS: dict[str, list[str]] = {
 }
 
 # ── Tail-yield engine ─────────────────────────────────────────────────────────
-YIELD_MIN_PRICE         = 0.95   # minimum YES price eligible for yield harvest
+YIELD_MIN_PRICE         = 0.90   # minimum YES price eligible for yield harvest
 YIELD_HOURS_TO_EXPIRY   = 48     # skip markets expiring beyond this many hours
 
 # ── Execution layer — risk and strategy parameters ────────────────────────────
