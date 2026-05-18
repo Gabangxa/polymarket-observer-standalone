@@ -14,34 +14,41 @@ import sys
 import types
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-# Stub py_clob_client so order_manager's lazy import succeeds without the real package.
-# This is acceptable for unit tests because we mock the CLOB client itself.
-if "py_clob_client" not in sys.modules:
-    _pcc      = types.ModuleType("py_clob_client")
-    _pcc_ct   = types.ModuleType("py_clob_client.clob_types")
+# Stub py_clob_client_v2 so order_manager's lazy imports succeed without the
+# real package. This is acceptable for unit tests because we mock the CLOB
+# client itself. The v1 name is also stubbed for legacy compatibility.
+class _OrderArgs:
+    def __init__(self, token_id=None, price=None, size=None, side=None):
+        self.token_id = token_id
+        self.price = price
+        self.size = size
+        self.side = side
+        self.expiration = None
 
-    class _OrderArgs:
-        def __init__(self, token_id=None, price=None, size=None, side=None):
-            self.token_id = token_id
-            self.price = price
-            self.size = size
-            self.side = side
-            self.expiration = None
+class _OrderType:
+    GTC = "GTC"
+    FOK = "FOK"
+    GTD = "GTD"
 
-    class _OrderType:
-        GTC = "GTC"
-        FOK = "FOK"
-        GTD = "GTD"
+class _PartialCreateOrderOptions:
+    def __init__(self, neg_risk=False):
+        self.neg_risk = neg_risk
 
-    class _PartialCreateOrderOptions:
-        def __init__(self, neg_risk=False):
-            self.neg_risk = neg_risk
+class _OrderPayload:
+    def __init__(self, orderID=None):
+        self.orderID = orderID
 
-    _pcc_ct.OrderArgs                  = _OrderArgs
-    _pcc_ct.OrderType                  = _OrderType
-    _pcc_ct.PartialCreateOrderOptions  = _PartialCreateOrderOptions
-    sys.modules["py_clob_client"]            = _pcc
-    sys.modules["py_clob_client.clob_types"] = _pcc_ct
+for _pkg_name in ("py_clob_client", "py_clob_client_v2"):
+    if _pkg_name in sys.modules:
+        continue
+    _pkg = types.ModuleType(_pkg_name)
+    _types_mod = types.ModuleType(f"{_pkg_name}.clob_types")
+    _types_mod.OrderArgs                  = _OrderArgs
+    _types_mod.OrderType                  = _OrderType
+    _types_mod.PartialCreateOrderOptions  = _PartialCreateOrderOptions
+    _types_mod.OrderPayload               = _OrderPayload
+    sys.modules[_pkg_name]                 = _pkg
+    sys.modules[f"{_pkg_name}.clob_types"] = _types_mod
 
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -73,20 +80,22 @@ class TestTickDec:
         om._tick_dec(client, "tok_b")
         assert client.get_tick_size.call_count == 1
 
-    def test_lookup_failure_returns_default(self):
+    def test_lookup_failure_raises(self):
+        # Fail closed instead of silently defaulting to 0.01 — tail markets use
+        # 0.001 tick, so a silent default would leak edge or trigger non-retryable
+        # invalid-tick-size rejections that get marked executed with no retry.
         client = MagicMock()
         client.get_tick_size.side_effect = Exception("timeout")
-        result = om._tick_dec(client, "tok_c")
-        assert result == om._TICK_DEFAULT
+        with pytest.raises(om.TickSizeLookupError):
+            om._tick_dec(client, "tok_c")
 
     def test_lookup_failure_does_not_cache(self):
         client = MagicMock()
         client.get_tick_size.side_effect = [Exception("timeout"), "0.001"]
-        first = om._tick_dec(client, "tok_d")
-        second = om._tick_dec(client, "tok_d")
-        # First call defaults to 0.01, second call should retry and get 0.001
-        assert first == Decimal("0.01")
-        assert second == Decimal("0.001")
+        with pytest.raises(om.TickSizeLookupError):
+            om._tick_dec(client, "tok_d")
+        # Second call should retry the lookup and succeed
+        assert om._tick_dec(client, "tok_d") == Decimal("0.001")
 
 
 # ── _is_retryable ─────────────────────────────────────────────────────────────

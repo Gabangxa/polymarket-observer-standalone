@@ -24,8 +24,16 @@ _GTD_BUFFER_SECS = 60   # Polymarket enforces: expiration must be > now + 60s
 
 # Tick size cache: token_id → Decimal tick size.
 # Polymarket markets use either 0.01 or 0.001; wrong precision → "Invalid order inputs".
+# Tail markets (price > 0.96 or < 0.04) use 0.001 tick — exactly the regime
+# tail_yield_engine targets, so silently defaulting to 0.01 would leak edge
+# (e.g. fair=0.987 → submitted at 0.98) and trigger non-retryable rejections.
+# Fail closed instead — callers handle the exception and skip this cycle.
 _TICK_CACHE: dict[str, Decimal] = {}
-_TICK_DEFAULT = Decimal("0.01")
+
+
+class TickSizeLookupError(RuntimeError):
+    """CLOB tick size lookup failed — fail closed rather than guess and risk silent edge loss."""
+    pass
 
 
 def _tick_dec(client, token_id: str) -> Decimal:
@@ -36,8 +44,9 @@ def _tick_dec(client, token_id: str) -> Decimal:
         _TICK_CACHE[token_id] = ts
         return ts
     except Exception as e:
-        logger.debug(f"tick size lookup failed for {token_id}: {e} — defaulting to {_TICK_DEFAULT}")
-        return _TICK_DEFAULT
+        raise TickSizeLookupError(
+            f"tick size lookup failed for token={token_id[:24]}…: {e}"
+        ) from e
 
 
 def _gtd_expiration(strategy: str) -> int:
@@ -223,12 +232,39 @@ def _get_token_id(signal: dict, side: str) -> str | None:
     return token_ids[1] if len(token_ids) > 1 else token_ids[0]
 
 
+def _rollback_neg_risk_legs(placed_legs, client) -> int:
+    """
+    Best-effort cancel of legs placed in a neg-risk batch that ended in partial
+    failure. Closes the orphan window for OPEN (resting) legs. FILLED legs
+    can't be unwound here — they become real positions for the operator to
+    manage; cancel_order returns False quickly on "already filled" / "not
+    found" (both non-retryable patterns), so this stays bounded.
+
+    placed_legs: iterable of (clord_id, exchange_order_id) tuples.
+    Returns the count of legs successfully canceled on the CLOB.
+    """
+    canceled = 0
+    for clord_id, exch_id in placed_legs:
+        if not exch_id:
+            continue
+        if cancel_order(clord_id, exch_id, client):
+            canceled += 1
+    return canceled
+
+
 def _place_neg_risk_legs(signal: dict, client) -> dict:
     """
     Place one BUY YES GTD order per outcome leg for a neg_risk_overround TAKER signal.
     MAKER signals (arb_type='maker') are rejected here — SELL NO execution is not yet
     implemented and executing a MAKER signal as BUY YES produces the wrong trade.
     Returns ok=True only if every leg was submitted.
+
+    Atomicity model: signal is marked executed at the END of the loop, after
+    all legs are attempted. On partial failure we best-effort cancel placed
+    legs to close the orphan window. On crash mid-loop the signal stays
+    unexecuted, but pre_trade_gate Gate 4 (order_exists_for_signal) prevents
+    a duplicate re-attempt — the signal then ages out as stale within
+    MAX_SIGNAL_AGE_SECS, and the reconciler picks up any CLOB orphans.
     """
     signal_id = signal["id"]
     metadata  = signal.get("metadata") or {}
@@ -248,13 +284,10 @@ def _place_neg_risk_legs(signal: dict, client) -> dict:
 
     token_map = db.get_token_ids_for_markets(market_ids)
 
-    # Mark executed before touching the API — prevents duplicate legs on retry
-    if signal_id:
-        db.mark_signal_executed(signal_id)
-
     legs_total     = len(market_ids)
     legs_placed    = 0
     first_clord_id = None
+    placed_legs    = []  # (clord_id, exchange_order_id) — rollback targets
 
     for outcome in outcomes:
         market_id = outcome.get("market_id")
@@ -272,7 +305,12 @@ def _place_neg_risk_legs(signal: dict, client) -> dict:
             continue
 
         token_id    = token_ids[0]
-        price       = Decimal(str(yes_ask)).quantize(_tick_dec(client, token_id), rounding=ROUND_DOWN)
+        try:
+            tick = _tick_dec(client, token_id)
+        except TickSizeLookupError as e:
+            logger.warning(f"Neg-risk leg skipped — {e} | market={market_id}")
+            continue
+        price       = Decimal(str(yes_ask)).quantize(tick, rounding=ROUND_DOWN)
         size_usdc   = _MIN_ORDER_USDC
         # Polymarket CLOB enforces 2-decimal share precision regardless of tick size
         # (py-clob-client ROUNDING_CONFIG: size=2 for every tick). Anything finer is
@@ -339,6 +377,7 @@ def _place_neg_risk_legs(signal: dict, client) -> dict:
             if first_clord_id is None:
                 first_clord_id = clord_id
             legs_placed += 1
+            placed_legs.append((clord_id, exchange_order_id))
             logger.info(
                 f"Neg-risk leg placed | clord_id={clord_id} | "
                 f"market={market_id} | price={price} | size_usdc={size_usdc}"
@@ -359,8 +398,19 @@ def _place_neg_risk_legs(signal: dict, client) -> dict:
     ok = legs_placed == legs_total
     if legs_placed > 0 and not ok:
         logger.warning(
-            f"Neg-risk partial execution: {legs_placed}/{legs_total} legs | signal_id={signal_id}"
+            f"Neg-risk partial execution: {legs_placed}/{legs_total} legs | signal_id={signal_id} "
+            f"— rolling back {len(placed_legs)} placed leg(s)"
         )
+        canceled = _rollback_neg_risk_legs(placed_legs, client)
+        logger.warning(
+            f"Neg-risk rollback complete | signal_id={signal_id} | "
+            f"canceled={canceled}/{len(placed_legs)} (uncanceled may be filled positions)"
+        )
+
+    # Mark executed at the end — placed legs are anchored in `orders` so
+    # pre_trade_gate Gate 4 prevents duplicate runs even before this mark.
+    if signal_id:
+        db.mark_signal_executed(signal_id)
 
     return {
         "ok":      ok,
@@ -381,8 +431,11 @@ def _place_neg_risk_maker_legs(signal: dict, client) -> dict:
     Partial fill risk: if only K < N legs fill, the remaining filled legs carry
     directional exposure. This is why TTL is short (NEG_RISK_SECS = 2 min).
 
-    All legs are marked executed before the first CLOB submission to prevent
-    duplicate execution on retry.
+    Atomicity model: signal is marked executed at the END of the loop. On
+    partial failure, placed legs are best-effort cancelled to close the
+    orphan window. On crash mid-loop, pre_trade_gate Gate 4
+    (order_exists_for_signal) prevents duplicate execution until the signal
+    ages out as stale; the reconciler then picks up any CLOB orphans.
     """
     signal_id = signal["id"]
     metadata  = signal.get("metadata") or {}
@@ -391,12 +444,10 @@ def _place_neg_risk_maker_legs(signal: dict, client) -> dict:
     if not outcomes:
         return {"ok": False, "clord_id": None, "error": "no outcomes in metadata"}
 
-    if signal_id:
-        db.mark_signal_executed(signal_id)
-
     legs_total     = len(outcomes)
     legs_placed    = 0
     first_clord_id = None
+    placed_legs    = []  # (clord_id, exchange_order_id) — rollback targets
 
     for outcome in outcomes:
         market_id    = outcome.get("market_id")
@@ -413,7 +464,12 @@ def _place_neg_risk_maker_legs(signal: dict, client) -> dict:
             logger.warning(f"Maker leg skipped — no yes_price | market={market_id}")
             continue
 
-        price = Decimal(str(yes_price)).quantize(_tick_dec(client, yes_token_id), rounding=ROUND_DOWN)
+        try:
+            tick = _tick_dec(client, yes_token_id)
+        except TickSizeLookupError as e:
+            logger.warning(f"Maker leg skipped — {e} | market={market_id}")
+            continue
+        price = Decimal(str(yes_price)).quantize(tick, rounding=ROUND_DOWN)
         if price <= 0:
             logger.warning(f"Maker leg skipped — price rounded to zero (raw={yes_price}) | market={market_id}")
             continue
@@ -482,6 +538,7 @@ def _place_neg_risk_maker_legs(signal: dict, client) -> dict:
             if first_clord_id is None:
                 first_clord_id = clord_id
             legs_placed += 1
+            placed_legs.append((clord_id, exchange_order_id))
             logger.info(
                 f"Maker leg placed | clord_id={clord_id} | market={market_id} "
                 f"| price={price} | shares={size_shares}"
@@ -506,8 +563,17 @@ def _place_neg_risk_maker_legs(signal: dict, client) -> dict:
     ok = legs_placed == legs_total
     if legs_placed > 0 and not ok:
         logger.warning(
-            f"Maker partial execution: {legs_placed}/{legs_total} legs | signal_id={signal_id}"
+            f"Maker partial execution: {legs_placed}/{legs_total} legs | signal_id={signal_id} "
+            f"— rolling back {len(placed_legs)} placed leg(s)"
         )
+        canceled = _rollback_neg_risk_legs(placed_legs, client)
+        logger.warning(
+            f"Maker rollback complete | signal_id={signal_id} | "
+            f"canceled={canceled}/{len(placed_legs)} (uncanceled may be filled positions)"
+        )
+
+    if signal_id:
+        db.mark_signal_executed(signal_id)
 
     return {
         "ok":      ok,
@@ -544,7 +610,13 @@ def place_order(signal: dict, client, reprice_of: int = None) -> dict:
     clord_id = _make_clord_id(strategy, signal_id)
 
     # Determine price by strategy (both use GTD LIMIT BUY)
-    tick = _tick_dec(client, token_id)
+    try:
+        tick = _tick_dec(client, token_id)
+    except TickSizeLookupError as e:
+        # Don't mark signal executed — tick failure is potentially transient
+        # (CLOB network blip). Next executor cycle will retry.
+        logger.warning(f"Skipping signal {signal_id} | {e}")
+        return {"ok": False, "clord_id": clord_id, "error": str(e)}
     if strategy == "spread_engine":
         # Post passive maker BUY at one tick below the current ask. This joins
         # the top of the book ahead of any existing bid below the ask, improving
@@ -850,7 +922,12 @@ def place_exit_order(position: dict, price: float, client) -> dict:
     if net_shares <= 0:
         return {"ok": False, "clord_id": None, "error": "zero net shares — nothing to exit"}
 
-    price_d      = Decimal(str(price)).quantize(_tick_dec(client, token_id), rounding=ROUND_DOWN)
+    try:
+        tick = _tick_dec(client, token_id)
+    except TickSizeLookupError as e:
+        logger.warning(f"Exit skipped — {e} | market={market_id}")
+        return {"ok": False, "clord_id": None, "error": str(e)}
+    price_d      = Decimal(str(price)).quantize(tick, rounding=ROUND_DOWN)
     size_shares  = net_shares.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
     size_usdc    = (price_d * size_shares).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
 
