@@ -65,11 +65,19 @@ def _invalidate_tick(token_id: str) -> None:
     _TICK_CACHE.pop(token_id, None)
 
 
-# Static fallback floor (USDC notional). Used by _size_from_signal to skip
-# sub-minimum sizes before any client call, and as the fallback when the
-# per-market CLOB minimum lookup fails. Polymarket's documented floor is $1;
-# we keep a conservative $5 so dust orders never reach the book.
-_MIN_ORDER_USDC = Decimal("5.0")
+# Static floor (USDC notional) = Polymarket's documented $1 order minimum.
+# This is NOT a system-imposed minimum above the exchange's: the authoritative
+# per-market floor is the CLOB's `min_order_size` (shares), read live in
+# _min_order_shares/_enforce_min_shares at placement. This static value is only
+# used where the CLOB cannot be reached: (1) the pre-client skip in
+# _size_from_signal (no client available there) so genuine sub-$1 dust never
+# gets built into an order the CLOB would reject as non-retryable, and (2) the
+# fallback when the per-market min_order_size lookup itself fails.
+#
+# Kept at $1 (not higher): at a $25 bankroll with MAX_POSITION_PCT=0.10 the
+# per-position cap is $2.50, so any floor above that would suppress every
+# spread_engine/tail_yield order before it reached the book.
+_MIN_ORDER_USDC = Decimal("1.0")
 
 # Min-order-size cache: token_id → (Decimal min_shares, fetched_at unix-secs).
 # The CLOB enforces a per-market minimum order size denominated in SHARES,

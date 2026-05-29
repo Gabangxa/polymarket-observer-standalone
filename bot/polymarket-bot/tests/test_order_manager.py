@@ -227,9 +227,9 @@ class TestSizeFromSignal:
         assert size == Decimal("7.50")
 
     def test_below_min_returns_zero(self):
-        # bankroll=10, cap=1 → below _MIN_ORDER_USDC=5.0 → 0
+        # bankroll=5, cap=0.50 → below _MIN_ORDER_USDC=1.0 → 0
         signal = {"metadata": {}}
-        with patch("db.get_bankroll", return_value=10.0), \
+        with patch("db.get_bankroll", return_value=5.0), \
              patch("db.get_max_position_pct", return_value=0.10):
             size = om._size_from_signal(signal, "BUY")
         assert size == Decimal("0")
@@ -399,9 +399,9 @@ class TestMinOrderShares:
     def test_falls_back_to_usdc_floor_on_failure(self):
         client = MagicMock()
         client.get_order_book.side_effect = Exception("book unavailable")
-        # _MIN_ORDER_USDC (5.0) / 0.50 = 10, rounded up
+        # _MIN_ORDER_USDC (1.0) / 0.50 = 2, rounded up
         shares = om._min_order_shares(client, "tok_a", Decimal("0.50"))
-        assert shares == Decimal("10.00")
+        assert shares == Decimal("2.00")
 
     def test_enforce_bumps_below_minimum(self):
         client = MagicMock()
