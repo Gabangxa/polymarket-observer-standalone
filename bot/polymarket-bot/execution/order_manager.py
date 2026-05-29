@@ -141,6 +141,59 @@ def _enforce_min_shares(client, token_id: str, price: Decimal, size_shares: Deci
     return size_shares
 
 
+def _exceeds_caps(market_id: str, token_id: str, size_usdc: Decimal, side: str = "BUY") -> str | None:
+    """
+    Authoritative post-bump cap check — the LAST gate that sees an order's
+    final USDC notional before it ships to the CLOB.
+
+    pre_trade_gate runs *before* _enforce_min_shares bumps a sub-minimum order
+    up to the CLOB's per-market share floor. On a market whose share minimum
+    exceeds the cap at the quoted price, that bump can lift notional back above
+    the per-position or portfolio cap the gate already cleared. This re-checks
+    the *final* notional and tells the caller to skip (not down-size) on a
+    breach: the CLOB minimum is a hard floor, so an order that only fits the
+    cap below that minimum cannot be placed at all — not trading the market is
+    the only disciplined outcome at this bankroll.
+
+    The per-position cap bounds long (BUY) exposure, so it is applied to BUY
+    orders only; SELL legs (neg-risk maker) add no long position and are
+    checked against the portfolio notional cap alone.
+
+    Returns a human-readable reason string on breach, or None when the order
+    is within both caps.
+    """
+    bankroll = Decimal(str(db.get_bankroll()))
+    if bankroll <= 0:
+        return "bankroll not set"
+    size = Decimal(str(size_usdc))
+
+    if side == "BUY":
+        pos_pct = Decimal(str(db.get_max_position_pct()))
+        pos_cap = pos_pct * bankroll
+        existing = Decimal("0")
+        position = db.get_position(market_id, token_id, "YES")
+        if position:
+            existing = (
+                Decimal(str(position["total_bought"])) +
+                Decimal(str(position["working_buy"]))
+            )
+        if existing + size > pos_cap:
+            return (
+                f"per-position cap: existing {existing:.2f} + order {size:.2f} "
+                f"> {pos_cap:.2f} USDC ({pos_pct * 100:.0f}% of {bankroll})"
+            )
+
+    port_pct = Decimal(str(db.get_max_portfolio_pct()))
+    port_cap = port_pct * bankroll
+    total = Decimal(str(db.get_total_open_exposure()))
+    if total + size > port_cap:
+        return (
+            f"portfolio cap: open {total:.2f} + order {size:.2f} "
+            f"> {port_cap:.2f} USDC ({port_pct * 100:.0f}% of {bankroll})"
+        )
+    return None
+
+
 def _gtd_expiration(strategy: str) -> int:
     """Unix timestamp (seconds) for GTD expiry. Includes Polymarket's 60s minimum buffer."""
     if strategy == "spread_engine":
@@ -420,6 +473,13 @@ def _place_neg_risk_legs(signal: dict, client) -> dict:
         # Honour the per-market CLOB minimum (shares) and re-derive notional.
         size_shares = _enforce_min_shares(client, token_id, price, size_shares)
         size_usdc   = (price * size_shares).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+        cap_breach  = _exceeds_caps(market_id, token_id, size_usdc, side="BUY")
+        if cap_breach:
+            logger.warning(
+                f"Neg-risk leg skipped — size_above_cap after min-share bump "
+                f"| market={market_id} | {cap_breach}"
+            )
+            continue
         expiration  = _gtd_expiration("neg_risk_overround")
         expiration_dt = datetime.fromtimestamp(expiration, tz=timezone.utc)
         clord_id    = _make_clord_id("negrisk", signal_id)
@@ -583,6 +643,13 @@ def _place_neg_risk_maker_legs(signal: dict, client) -> dict:
         # Honour the per-market CLOB minimum (shares) and re-derive notional.
         size_shares = _enforce_min_shares(client, yes_token_id, price, size_shares)
         size_usdc   = (price * size_shares).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+        cap_breach  = _exceeds_caps(market_id, yes_token_id, size_usdc, side="SELL")
+        if cap_breach:
+            logger.warning(
+                f"Maker leg skipped — size_above_cap after min-share bump "
+                f"| market={market_id} | {cap_breach}"
+            )
+            continue
         expiration  = _gtd_expiration("neg_risk_overround")
         expiration_dt = datetime.fromtimestamp(expiration, tz=timezone.utc)
         clord_id    = _make_clord_id("negrsk_m", signal_id)
@@ -767,6 +834,19 @@ def place_order(signal: dict, client, reprice_of: int = None) -> dict:
     # rejected; recompute size_usdc so the DB exposure record matches what ships.
     size_shares = _enforce_min_shares(client, token_id, price, size_shares)
     size_usdc   = (price * size_shares).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+
+    # Authoritative cap re-check AFTER the min-share bump. pre_trade_gate ran on
+    # the pre-bump size; _enforce_min_shares can lift notional above the cap on
+    # markets whose share minimum exceeds the cap at this price. Skip rather than
+    # ship an over-cap order — the CLOB minimum is a hard floor, so a market that
+    # can't be sized within the cap is simply not tradeable at this bankroll.
+    cap_breach = _exceeds_caps(market_id, token_id, size_usdc, side="BUY")
+    if cap_breach:
+        logger.warning(
+            f"Order skipped — size_above_cap after min-share bump | "
+            f"clord_id={clord_id} strategy={strategy} market={market_id} | {cap_breach}"
+        )
+        return {"ok": False, "clord_id": clord_id, "error": f"size_above_cap: {cap_breach}"}
 
     expiration    = _gtd_expiration(strategy)
     expiration_dt = datetime.fromtimestamp(expiration, tz=timezone.utc)

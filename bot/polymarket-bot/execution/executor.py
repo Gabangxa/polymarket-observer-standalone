@@ -127,6 +127,8 @@ def _classify_skip_reason(err: str) -> str | None:
     if not err:
         return None
     lower = err.lower()
+    if "size_above_cap" in lower:
+        return "size_above_cap"
     if "missing token_id" in lower or "no token_id" in lower:
         return "missing_token_id"
     if "missing yes_price" in lower or "missing yes_ask" in lower:

@@ -274,6 +274,17 @@ class TestPlaceOrderRouting:
         for p in stack:
             p.stop()
 
+    @staticmethod
+    def _allow_caps(mock_db, bankroll: float = 1000.0):
+        """Configure the mocked module-level db so _exceeds_caps passes (caps
+        are read via module-global db, not the locally-imported db that sizing
+        uses). Portfolio cap is set wide so only deliberate breaches trip it."""
+        mock_db.get_bankroll.return_value = bankroll
+        mock_db.get_max_position_pct.return_value = 0.10
+        mock_db.get_max_portfolio_pct.return_value = 1.0
+        mock_db.get_position.return_value = None
+        mock_db.get_total_open_exposure.return_value = 0.0
+
     def test_unknown_strategy_rejected(self):
         client = MagicMock()
         client.get_tick_size.return_value = "0.01"
@@ -306,6 +317,7 @@ class TestPlaceOrderRouting:
         stack = self._patches()
         _, mock_db, _, _, _ = self._enter(stack)
         mock_db.insert_order.return_value = 1
+        self._allow_caps(mock_db)
         try:
             result = om.place_order(signal, client)
         finally:
@@ -326,6 +338,7 @@ class TestPlaceOrderRouting:
         stack = self._patches()
         _, mock_db, _, _, _ = self._enter(stack)
         mock_db.insert_order.return_value = 1
+        self._allow_caps(mock_db)
         try:
             result = om.place_order(signal, client)
         finally:
@@ -360,6 +373,7 @@ class TestPlaceOrderRouting:
         stack = self._patches()
         _, mock_db, _, _, _ = self._enter(stack)
         mock_db.insert_order.return_value = 1
+        self._allow_caps(mock_db)
         sleeper_patch = patch.object(om.time, "sleep")
         sleeper = sleeper_patch.start()
         try:
@@ -416,6 +430,109 @@ class TestMinOrderShares:
         assert out == Decimal("100")
 
 
+# ── _exceeds_caps (post-bump cap enforcement) ─────────────────────────────────
+
+class TestExceedsCaps:
+    """
+    _enforce_min_shares can lift an order's notional above the cap the
+    pre-trade gate cleared. _exceeds_caps is the last gate before submission.
+    """
+
+    @staticmethod
+    def _db(bankroll=25.0, pos_pct=0.10, port_pct=1.0,
+            position=None, open_exposure=0.0):
+        mdb = patch.object(om, "db").start()
+        mdb.get_bankroll.return_value = bankroll
+        mdb.get_max_position_pct.return_value = pos_pct
+        mdb.get_max_portfolio_pct.return_value = port_pct
+        mdb.get_position.return_value = position
+        mdb.get_total_open_exposure.return_value = open_exposure
+        return mdb
+
+    def teardown_method(self):
+        patch.stopall()
+
+    def test_within_caps_returns_none(self):
+        self._db()
+        assert om._exceeds_caps("m", "t", Decimal("2.00")) is None
+
+    def test_per_position_cap_breach(self):
+        # $25 bankroll, 10% → $2.50 cap; bumped order $4.85 breaches.
+        self._db()
+        reason = om._exceeds_caps("m", "t", Decimal("4.85"))
+        assert reason is not None and "per-position cap" in reason
+
+    def test_existing_position_plus_order_breaches(self):
+        # existing $2.00 + new $1.00 = $3.00 > $2.50 cap
+        self._db(position={"total_bought": 2.0, "working_buy": 0.0})
+        reason = om._exceeds_caps("m", "t", Decimal("1.00"))
+        assert reason is not None and "per-position cap" in reason
+
+    def test_at_cap_boundary_allowed(self):
+        # exactly at cap is allowed (gate uses strict >); $2.50 == $2.50
+        self._db()
+        assert om._exceeds_caps("m", "t", Decimal("2.50")) is None
+
+    def test_portfolio_cap_breach(self):
+        # per-position fine (50% cap=$12.50) but open exposure near 33% port cap
+        self._db(pos_pct=0.50, port_pct=0.33, open_exposure=8.00)
+        reason = om._exceeds_caps("m", "t", Decimal("1.00"))
+        assert reason is not None and "portfolio cap" in reason
+
+    def test_sell_skips_per_position_cap(self):
+        # A SELL leg adds no long exposure → per-position (long) cap must not
+        # trip; only the portfolio cap applies.
+        self._db(pos_pct=0.10, port_pct=1.0)
+        assert om._exceeds_caps("m", "t", Decimal("5.00"), side="SELL") is None
+
+    def test_unset_bankroll_blocks(self):
+        self._db(bankroll=0.0)
+        assert om._exceeds_caps("m", "t", Decimal("1.00")) == "bankroll not set"
+
+
+class TestPlaceOrderCapEnforcement:
+    """place_order must skip — never ship — an order the min-share bump pushed
+    above the per-position cap, and must not touch the CLOB or insert a row."""
+
+    def setup_method(self):
+        om._TICK_CACHE.clear()
+        om._MIN_SIZE_CACHE.clear()
+
+    def test_over_cap_after_bump_is_skipped(self):
+        # $25 bankroll, 10% per-position → $2.50 cap. Market min_order_size=5
+        # shares at price 0.97 → bumped notional $4.85 > $2.50 → skip.
+        client = MagicMock()
+        client.get_tick_size.return_value = "0.01"
+        client.get_order_book.return_value = {"min_order_size": "5"}
+
+        signal = _base_signal(strategy="tail_yield_engine", yes_price=0.97)
+        stack = [
+            patch("db.get_bankroll", return_value=25.0),
+            patch("db.get_max_position_pct", return_value=0.10),
+            patch.object(om, "db"),
+            patch.object(om, "alerts"),
+            patch.object(om, "nats_bus"),
+        ]
+        mocks = [p.start() for p in stack]
+        mock_db = mocks[2]
+        mock_db.get_bankroll.return_value = 25.0
+        mock_db.get_max_position_pct.return_value = 0.10
+        mock_db.get_max_portfolio_pct.return_value = 1.0
+        mock_db.get_position.return_value = None
+        mock_db.get_total_open_exposure.return_value = 0.0
+        try:
+            result = om.place_order(signal, client)
+        finally:
+            for p in stack:
+                p.stop()
+
+        assert result["ok"] is False
+        assert "size_above_cap" in result["error"]
+        client.create_order.assert_not_called()
+        client.post_order.assert_not_called()
+        mock_db.insert_order.assert_not_called()
+
+
 # ── neg-risk placement (regression: _MIN_ORDER_USDC must be defined) ───────────
 
 class TestNegRiskPlacement:
@@ -446,6 +563,12 @@ class TestNegRiskPlacement:
         mock_db = mocks[0]
         mock_db.get_token_ids_for_markets.return_value = {"m1": ["tok_m1"]}
         mock_db.insert_order.return_value = 1
+        # Cap check reads module-level db; give it room so the leg places.
+        mock_db.get_bankroll.return_value = 1000.0
+        mock_db.get_max_position_pct.return_value = 0.10
+        mock_db.get_max_portfolio_pct.return_value = 1.0
+        mock_db.get_position.return_value = None
+        mock_db.get_total_open_exposure.return_value = 0.0
         try:
             result = om.place_order(signal, client)
         finally:
