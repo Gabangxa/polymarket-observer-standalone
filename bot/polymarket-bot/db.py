@@ -718,6 +718,25 @@ def get_token_ids_for_markets(market_ids: list[str]) -> dict[str, list[str]]:
             return {r["market_id"]: (r["token_ids"] or []) for r in cur.fetchall()}
 
 
+def get_market_meta(market_id: str) -> dict | None:
+    """Return {question, end_date} for one market, or None if unknown.
+
+    Used by the pre-trade resolution-sanity gate: the executable-signal query
+    only pulls token_ids/outcomes/neg_risk from markets, so the gate needs an
+    authoritative end_date and title straight from the markets table.
+    """
+    if not market_id:
+        return None
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT question, end_date FROM markets WHERE market_id = %s",
+                (market_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
 def get_recent_signals(strategy: str = None, hours: int = 24, limit: int = 100) -> list[dict]:
     """Fetch recent signals, optionally filtered by strategy."""
     with get_conn() as conn:

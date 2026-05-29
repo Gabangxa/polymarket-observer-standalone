@@ -102,6 +102,17 @@ BANKROLL_USDC         = float(os.environ.get("BANKROLL_USDC", "0.0"))
 MAX_POSITION_PCT      = 0.10   # max fraction of bankroll per single position
 MAX_PORTFOLIO_PCT     = 0.33   # max fraction of bankroll open across all positions
 MAX_SIGNAL_AGE_SECS   = 60     # reject signals older than this (seconds)
+# Resolution-sanity gate (pre_trade_gate._check_resolution_sanity):
+# spread_engine captures spread then exits — it must not enter so close to
+# resolution that the position is dominated by the binary outcome. Reject a
+# spread entry with less than this many hours of runway to end_date. Does NOT
+# apply to tail_yield_engine (targets near-expiry by design) or neg_risk
+# (held to resolution by design).
+ENTRY_MIN_HOURS_TO_RESOLUTION   = 6.0
+# A market title asserting a deadline already this many hours in the past is
+# treated as stale/relisted metadata: the title contradicts the (future)
+# end_date that let it pass the scanner. Block entry on all strategies.
+TITLE_DEADLINE_PAST_GRACE_HOURS = 24
 ORDER_MAX_RETRIES     = 5      # exponential backoff attempts before REJECTED
 EXECUTOR_POLL_SECS    = 10     # fallback poll interval (NATS fast-path is faster)
 # Scheduler watchdog: if the executor's heartbeat is older than this, the thread

@@ -8,16 +8,116 @@
 # next cycle unless they age out past MAX_SIGNAL_AGE_SECS.
 
 import logging
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 
 import db
 from config import (
     EXECUTION_STRATEGIES,
     MAX_SIGNAL_AGE_SECS,
+    ENTRY_MIN_HOURS_TO_RESOLUTION,
+    TITLE_DEADLINE_PAST_GRACE_HOURS,
 )
 
 logger = logging.getLogger(__name__)
+
+_MONTHS = {
+    name.lower(): i
+    for i, name in enumerate(
+        ("January", "February", "March", "April", "May", "June", "July",
+         "August", "September", "October", "November", "December"),
+        start=1,
+    )
+}
+
+# "<Month> <day>[st|nd|rd|th][, <year>]" preceded by a deadline word.
+# Matches "by May 3", "before June 1", "on May 31, 2026", "until Dec 3rd".
+_DEADLINE_RE = re.compile(
+    r"(?:by|before|on|until)\s+"
+    r"([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?",
+    re.IGNORECASE,
+)
+
+
+def _parse_title_deadline(question: str) -> datetime | None:
+    """Extract a deadline datetime from a market title, or None if none is found.
+
+    Conservative: only returns a date when a month/day is confidently parsed.
+    Uses end-of-day so "by May 3" means through 23:59:59 UTC on May 3. When no
+    year is present, picks the occurrence of (month, day) nearest to now — a
+    long-dated market would carry an explicit year, and its end_date would have
+    been filtered by the scanner's MAX_HOURS_TO_CLOSE anyway.
+    """
+    if not question:
+        return None
+    m = _DEADLINE_RE.search(question)
+    if not m:
+        return None
+    month = _MONTHS.get(m.group(1).lower())
+    if not month:
+        return None
+    day = int(m.group(2))
+    now = datetime.now(timezone.utc)
+
+    if m.group(3):
+        try:
+            return datetime(int(m.group(3)), month, day, 23, 59, 59, tzinfo=timezone.utc)
+        except ValueError:
+            return None
+
+    candidates = []
+    for yr in (now.year - 1, now.year, now.year + 1):
+        try:
+            candidates.append(datetime(yr, month, day, 23, 59, 59, tzinfo=timezone.utc))
+        except ValueError:
+            continue  # e.g. Feb 29 on a non-leap year
+    if not candidates:
+        return None
+    return min(candidates, key=lambda d: abs((d - now).total_seconds()))
+
+
+def _check_resolution_sanity(signal: dict, strategy: str, market_id: str) -> tuple[bool, str]:
+    """
+    Two independent resolution-safety checks:
+
+    (1) Title-deadline elapsed (all strategies): if the market title asserts a
+        deadline that is already past, the title contradicts the future end_date
+        that let it pass the scanner — stale or relisted metadata. We don't
+        actually know what we'd be holding, so refuse. This is the case that
+        fired live: "...by May 3" entered on May 29.
+
+    (2) Resolution runway (spread_engine only): spread capture needs time to
+        compress and exit before the binary resolves. Entering with too little
+        runway turns a structural spread trade into a directional resolution
+        bet. tail_yield_engine targets near-expiry and neg_risk is held to
+        resolution, so both are exempt.
+    """
+    meta     = db.get_market_meta(market_id) or {}
+    question = (signal.get("metadata") or {}).get("question") or meta.get("question") or ""
+    end_date = meta.get("end_date")
+    now      = datetime.now(timezone.utc)
+
+    deadline = _parse_title_deadline(question)
+    if deadline is not None:
+        if deadline < now - timedelta(hours=TITLE_DEADLINE_PAST_GRACE_HOURS):
+            return False, (
+                f"title deadline {deadline:%Y-%m-%d} already elapsed "
+                f"(now {now:%Y-%m-%d}) — stale/relisted market metadata; "
+                f"title contradicts future end_date"
+            )
+
+    if strategy == "spread_engine" and end_date is not None:
+        if end_date.tzinfo is None:
+            end_date = end_date.replace(tzinfo=timezone.utc)
+        hours = (end_date - now).total_seconds() / 3600
+        if hours < ENTRY_MIN_HOURS_TO_RESOLUTION:
+            return False, (
+                f"spread entry too close to resolution "
+                f"({hours:.1f}h < {ENTRY_MIN_HOURS_TO_RESOLUTION}h runway)"
+            )
+
+    return True, ""
 
 
 def check(signal: dict) -> tuple[bool, str]:
@@ -73,6 +173,11 @@ def check(signal: dict) -> tuple[bool, str]:
         approved, reason = _check_position_exposure(market_id, token_ids[0], bankroll)
         if not approved:
             return False, reason
+
+    # Gate 7: resolution sanity — stale title deadline + spread entry runway
+    approved, reason = _check_resolution_sanity(signal, strategy, market_id)
+    if not approved:
+        return False, reason
 
     logger.info(
         f"Pre-trade gate APPROVED | signal_id={signal_id} | "
