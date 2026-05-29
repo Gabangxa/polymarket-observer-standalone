@@ -308,6 +308,12 @@ def run_executor() -> None:
                     connection_checker.run_check(client)
                 except Exception as _ce:
                     logger.warning(f"Connection check error: {_ce}")
+                # Order placement is geoblocked by IP region while reads/auth are
+                # not, so this is a distinct probe from run_check above.
+                try:
+                    connection_checker.check_geoblock()
+                except Exception as _ge:
+                    logger.warning(f"Geoblock check error: {_ge}")
 
             # Periodic order-state reconciliation. Catches DB rows stuck in
             # OPEN/SENT/PENDING_SUBMISSION whose CLOB-side state has drifted

@@ -2,11 +2,70 @@ import json
 import logging
 from datetime import datetime, timezone
 
+import httpx
+
+import alerts
 import db
 
 logger = logging.getLogger(__name__)
 
 CONNECTION_STATUS_KEY = "connection_status"
+GEOBLOCK_STATUS_KEY   = "geoblock_status"
+
+# Public, unauthenticated endpoint that geolocates the *requesting* IP and
+# reports whether Polymarket will accept orders from it. Reads/auth are never
+# geoblocked — only order placement — so a passing run_check() can coexist with
+# a hard trading block. This probe makes the deploy region's trading
+# eligibility explicit instead of leaving it buried in per-order 403s.
+GEOBLOCK_URL = "https://polymarket.com/api/geoblock"
+
+
+def check_geoblock() -> dict:
+    """Probe Polymarket's geoblock endpoint from this container's egress IP.
+
+    Persists the result to bot_config['geoblock_status'] and, when blocked,
+    logs at ERROR and fires a Discord alert. Network/parse failures are
+    non-fatal: they are logged and recorded as error, never raised, so a
+    transient probe failure can't take down the executor.
+    """
+    status = {
+        "blocked":   None,
+        "country":   None,
+        "region":    None,
+        "ip":        None,
+        "checkedAt": datetime.now(timezone.utc).isoformat(),
+        "error":     None,
+    }
+    try:
+        resp = httpx.get(GEOBLOCK_URL, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        status["blocked"] = bool(data.get("blocked"))
+        status["country"] = data.get("country")
+        status["region"]  = data.get("region")
+        status["ip"]      = data.get("ip")
+    except Exception as e:
+        status["error"] = str(e)
+        logger.warning(f"[connection_checker] Geoblock probe failed: {e}")
+
+    if status["blocked"]:
+        logger.error(
+            f"[connection_checker] GEOBLOCKED — order placement will 403. "
+            f"country={status['country']} region={status['region']} ip={status['ip']}"
+        )
+        alerts.geoblock_detected(status)
+    elif status["error"] is None:
+        logger.info(
+            f"[connection_checker] Geoblock check: NOT blocked "
+            f"(country={status['country']} region={status['region']} ip={status['ip']})"
+        )
+
+    try:
+        db.set_config(GEOBLOCK_STATUS_KEY, json.dumps(status))
+    except Exception as e:
+        logger.error(f"[connection_checker] Failed to persist geoblock status: {e}")
+
+    return status
 
 
 def run_check(client=None) -> dict:

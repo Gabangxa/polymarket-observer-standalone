@@ -183,6 +183,22 @@ def order_rejected(
     )
 
 
+def geoblock_detected(status: dict) -> None:
+    """Alert when the deploy region is geoblocked by Polymarket — order
+    placement will 403 on every attempt. Rate-limited (hourly) since the
+    probe re-runs on a schedule and the condition is sticky until redeploy."""
+    if not _should_send("geoblock", ZERO_SIGNAL_ALERT_COOLDOWN_SECS):
+        return
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    _send(
+        f":no_entry_sign: **GEOBLOCKED — orders will be rejected** | {ts}\n"
+        f"Polymarket blocks trading from this region. Every order placement "
+        f"will return HTTP 403 until the service runs from a permitted region.\n"
+        f"Detected: country=`{status.get('country')}` "
+        f"region=`{status.get('region')}` ip=`{status.get('ip')}`"
+    )
+
+
 def order_skipped(
     strategy: str,
     market_id: str,

@@ -112,3 +112,26 @@ class TestOrderSkipped:
         assert mock_send.call_count == 2, (
             "same reason within cooldown suppressed; a different reason still alerts"
         )
+
+
+class TestGeoblockAlert:
+    def setup_method(self):
+        alerts._alert_cooldowns.clear()
+
+    def teardown_method(self):
+        alerts._alert_cooldowns.clear()
+
+    def test_sends_with_region_detail(self):
+        with patch.object(alerts, "_send") as mock_send:
+            alerts.geoblock_detected(
+                {"blocked": True, "country": "NL", "region": "NH", "ip": "1.2.3.4"}
+            )
+        assert mock_send.call_count == 1
+        body = mock_send.call_args[0][0]
+        assert "NL" in body and "1.2.3.4" in body
+
+    def test_rate_limited(self):
+        with patch.object(alerts, "_send") as mock_send:
+            alerts.geoblock_detected({"blocked": True, "country": "NL"})
+            alerts.geoblock_detected({"blocked": True, "country": "NL"})
+        assert mock_send.call_count == 1, "sticky condition must not re-alert within cooldown"

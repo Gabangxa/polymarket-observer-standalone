@@ -161,9 +161,18 @@ def execution_status():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+    geoblock = None
+    try:
+        raw = db.get_config("geoblock_status")
+        if raw:
+            geoblock = json.loads(raw)
+    except Exception:
+        geoblock = None
+
     return jsonify({
         "paused":      paused,
         "open_orders": open_count,
+        "geoblock":    geoblock,
         "timestamp":   datetime.now(timezone.utc).isoformat(),
     })
 
