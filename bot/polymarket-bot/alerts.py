@@ -58,11 +58,11 @@ def _send(content: str) -> None:
             data=payload,
             headers={
                 "Content-Type": "application/json",
-                # Discord's Cloudflare edge returns 403 Forbidden to the default
-                # urllib User-Agent ("Python-urllib/x.y"). A descriptive UA is
-                # both required to get past the block and what Discord's ToS asks
-                # clients to send. Without this, ALL alerts are silently 403'd.
-                "User-Agent": "polymarket-observer/1.0 (+https://github.com/Gabangxa/polymarket-observer-standalone)",
+                # Discord REQUIRES a valid User-Agent and rejects the default
+                # urllib one ("Python-urllib/x.y") with 403 Forbidden, silently
+                # dropping ALL alerts. Documented format is `DiscordBot ($url,
+                # $version)`; see https://docs.discord.com/developers/reference
+                "User-Agent": "DiscordBot (https://github.com/Gabangxa/polymarket-observer-standalone, 1.0)",
             },
             method="POST",
         )
