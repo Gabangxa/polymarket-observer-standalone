@@ -56,7 +56,14 @@ def _send(content: str) -> None:
         req = urllib.request.Request(
             url,
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                # Discord's Cloudflare edge returns 403 Forbidden to the default
+                # urllib User-Agent ("Python-urllib/x.y"). A descriptive UA is
+                # both required to get past the block and what Discord's ToS asks
+                # clients to send. Without this, ALL alerts are silently 403'd.
+                "User-Agent": "polymarket-observer/1.0 (+https://github.com/Gabangxa/polymarket-observer-standalone)",
+            },
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=5):
