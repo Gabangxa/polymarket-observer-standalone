@@ -231,10 +231,19 @@ def reconcile_positions() -> dict:
             db_by_token[tok] = db_by_token.get(tok, Decimal("0")) + net
 
     # Wallet positions: each entry has 'asset' (= token_id) and 'size' (shares).
+    # Skip redeemable holdings: these are resolved markets whose shares still sit
+    # in the wallet until redeemed. The Data API keeps reporting size > 0 for them,
+    # but the bot's positions table closes a position on resolution — so they read
+    # as pure drift and spam the alert every reconciler cycle. They are not active
+    # exposure, so exclude them from the comparison.
     wallet_by_token: dict[str, Decimal] = {}
+    redeemable_skipped = 0
     for w in wallet:
         tok = w.get("asset") or w.get("token_id")
         if not tok:
+            continue
+        if w.get("redeemable"):
+            redeemable_skipped += 1
             continue
         try:
             size = Decimal(str(w.get("size") or 0))
@@ -261,10 +270,11 @@ def reconcile_positions() -> dict:
             )
 
     summary = {
-        "db_rows":       len(db_by_token),
-        "wallet_rows":   len(wallet_by_token),
-        "drift_markets": len(drift_markets),
-        "drift_detail":  drift_markets[:10],   # cap for log payload
+        "db_rows":            len(db_by_token),
+        "wallet_rows":        len(wallet_by_token),
+        "redeemable_skipped": redeemable_skipped,
+        "drift_markets":      len(drift_markets),
+        "drift_detail":       drift_markets[:10],   # cap for log payload
     }
 
     if drift_markets:
@@ -273,6 +283,7 @@ def reconcile_positions() -> dict:
     logger.info(
         f"reconcile_positions: db_tokens={summary['db_rows']} "
         f"wallet_tokens={summary['wallet_rows']} "
+        f"redeemable_skipped={summary['redeemable_skipped']} "
         f"drift={summary['drift_markets']}"
     )
     return summary

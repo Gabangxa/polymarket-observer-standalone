@@ -182,6 +182,10 @@ ZERO_SIGNAL_ALERT_COOLDOWN_SECS = 3600   # 1 hour
 # Pre-CLOB order skips (size-above-cap, missing price, etc.) are alerted at most
 # once per skip-reason per this window so a systemic data bug can't flood the channel.
 ORDER_SKIPPED_ALERT_COOLDOWN_SECS = 3600   # 1 hour
+# Position drift re-detects every reconciler cycle (~5min) and stays drifted until
+# manual reconciliation, so without a cooldown it floods Discord. Alert at most once
+# per this window while drift persists.
+POSITION_DRIFT_ALERT_COOLDOWN_SECS = 1800   # 30 minutes
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 WATCHLIST_PATH   = "data/watchlist/watched_markets.json"

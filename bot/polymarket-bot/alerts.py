@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from config import (
     ZERO_SIGNAL_ALERT_COOLDOWN_SECS,
     ORDER_SKIPPED_ALERT_COOLDOWN_SECS,
+    POSITION_DRIFT_ALERT_COOLDOWN_SECS,
 )
 
 logger = logging.getLogger(__name__)
@@ -275,7 +276,13 @@ def position_drift(drift_summary: dict) -> None:
     """
     Alert when the position reconciler finds non-trivial drift between the
     DB positions table and the actual Polymarket wallet balance.
+
+    Rate-limited: the reconciler re-detects the same drift every ~5min until an
+    operator reconciles manually, which floods Discord. Send at most once per
+    POSITION_DRIFT_ALERT_COOLDOWN_SECS while drift persists.
     """
+    if not _should_send("position_drift", POSITION_DRIFT_ALERT_COOLDOWN_SECS):
+        return
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     _send(
         f":warning: **Position drift detected** | {ts}\n"
