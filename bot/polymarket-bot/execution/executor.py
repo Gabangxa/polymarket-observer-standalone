@@ -104,6 +104,24 @@ def _process_signals(client) -> int:
         if skip_reason and signal_id:
             db.mark_signal_skipped(signal_id, skip_reason)
 
+        # Alert on pre-CLOB failures the operator can't otherwise see. CLOB
+        # rejections already fired order_rejected (result["alerted"]); a missing
+        # orderbook is benign (market gone, handled by prune below). Everything
+        # else — size above cap, missing price/token, bankroll not set, db
+        # error — is a real missed trade with no other Discord signal.
+        if (
+            skip_reason
+            and skip_reason != "orderbook_not_found"
+            and not result.get("alerted")
+        ):
+            alerts.order_skipped(
+                strategy=strategy,
+                market_id=signal.get("market_id", ""),
+                question=signal.get("question", ""),
+                reason=skip_reason,
+                detail=result.get("error", ""),
+            )
+
         # The CLOB told us this orderbook is gone — remove the market from the
         # watchlist so the scanner, collector, and engines stop visiting it.
         # Stale unexecuted signals for the market are also deleted so they don't

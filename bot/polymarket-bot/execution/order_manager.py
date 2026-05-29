@@ -971,7 +971,9 @@ def place_order(signal: dict, client, reprice_of: int = None) -> dict:
                 "ts":        datetime.now(timezone.utc).isoformat(),
             },
         )
-        return {"ok": False, "clord_id": clord_id, "error": detail}
+        # "alerted" tells the executor an order_rejected alert already fired for
+        # this failure, so it won't also emit an order_skipped alert.
+        return {"ok": False, "clord_id": clord_id, "error": detail, "alerted": True}
 
 
 def poll_order_status(order: dict, client) -> None:

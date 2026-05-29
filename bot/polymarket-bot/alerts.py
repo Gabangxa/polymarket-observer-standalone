@@ -10,6 +10,11 @@ import time
 import urllib.request
 from datetime import datetime, timezone
 
+from config import (
+    ZERO_SIGNAL_ALERT_COOLDOWN_SECS,
+    ORDER_SKIPPED_ALERT_COOLDOWN_SECS,
+)
+
 logger = logging.getLogger(__name__)
 
 _WEBHOOK = None
@@ -17,6 +22,24 @@ _WEBHOOK = None
 # Crash alert rate-limit: don't fire again within this many seconds
 _CRASH_COOLDOWN_SECS = 900  # 15 minutes
 _last_crash_alert_at: float = 0.0
+
+# Generic time-based rate limit keyed by an arbitrary string (engine name,
+# skip-reason, etc). Keeps repetitive alerts from flooding Discord.
+_alert_cooldowns: dict[str, float] = {}
+
+
+def _should_send(key: str, cooldown_secs: float) -> bool:
+    """Return True if `cooldown_secs` have elapsed since this key last sent.
+
+    First call for a given key always returns True. On True it records the
+    send time, so callers must only call this when they intend to send.
+    """
+    now  = time.monotonic()
+    last = _alert_cooldowns.get(key, 0.0)
+    if now - last < cooldown_secs:
+        return False
+    _alert_cooldowns[key] = now
+    return True
 
 
 def _webhook() -> str | None:
@@ -92,7 +115,14 @@ def pipeline_crashed(run_number: int, error: Exception) -> None:
 
 def zero_signal_streak(engine: str, streak: int, last_signal_at: str | None,
                        poll_interval_secs: int = 30) -> None:
-    """Alert when an engine hasn't fired a signal for too many consecutive runs."""
+    """Alert when an engine hasn't fired a signal for too many consecutive runs.
+
+    Rate-limited per engine: once the streak passes the warn threshold this is
+    called every pipeline run (~30s), which floods the channel. Send at most
+    once per engine per ZERO_SIGNAL_ALERT_COOLDOWN_SECS.
+    """
+    if not _should_send(f"zero_signal:{engine}", ZERO_SIGNAL_ALERT_COOLDOWN_SECS):
+        return
     ts   = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     last = last_signal_at or "never"
     elapsed_min = streak * poll_interval_secs // 60
@@ -151,6 +181,35 @@ def order_rejected(
         f"`{q}`\n"
         f"Error: `{str(error)[:200]}` | `{clord_id}`"
     )
+
+
+def order_skipped(
+    strategy: str,
+    market_id: str,
+    question: str,
+    reason: str,
+    detail: str = "",
+) -> None:
+    """Alert when a signal could not be turned into an order *before* it ever
+    reached the CLOB — size above cap, missing price/token, bankroll not set,
+    db error, etc. These are real missed trades but never produce a CLOB
+    rejection, so order_rejected() never fires for them.
+
+    Rate-limited per reason so a systemic failure (e.g. every signal missing
+    price metadata) can't flood the channel.
+    """
+    if not _should_send(f"order_skipped:{reason}", ORDER_SKIPPED_ALERT_COOLDOWN_SECS):
+        return
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    q  = (question or market_id)[:60]
+    line = (
+        f":no_entry: **Order skipped (no CLOB order)** | `{strategy}` | {ts}\n"
+        f"`{q}`\n"
+        f"Reason: `{reason}`"
+    )
+    if detail:
+        line += f" — `{detail[:160]}`"
+    _send(line)
 
 
 def executor_paused() -> None:

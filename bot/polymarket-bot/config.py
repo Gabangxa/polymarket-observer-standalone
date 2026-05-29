@@ -174,6 +174,15 @@ NATS_URL                = os.environ.get("NATS_URL", "")
 LOG_RETENTION_DAYS      = 14   # delete log files older than this many days
 ZERO_SIGNAL_STREAK_WARN = 6    # warn after N consecutive zero-signal runs (~3 min at 30s interval)
 
+# ── Alert rate limits ───────────────────────────────────────────────────────────
+# Zero-signal streaks re-trigger every pipeline run once past the warn threshold;
+# without a cooldown that floods Discord every ~30s. Alert at most once per engine
+# per this window. Bump to 7200 for 2-hourly.
+ZERO_SIGNAL_ALERT_COOLDOWN_SECS = 3600   # 1 hour
+# Pre-CLOB order skips (size-above-cap, missing price, etc.) are alerted at most
+# once per skip-reason per this window so a systemic data bug can't flood the channel.
+ORDER_SKIPPED_ALERT_COOLDOWN_SECS = 3600   # 1 hour
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 WATCHLIST_PATH   = "data/watchlist/watched_markets.json"
 SNAPSHOTS_DIR    = "data/snapshots"
