@@ -242,6 +242,11 @@ _NON_RETRYABLE_ERROR_PATTERNS = (
     "market not active",
     "does not exist",       # orderbook/market delisted or resolved — token no longer tradeable
     "not found",            # generic resource-not-found rejections
+    # Region geoblock (HTTP 403): the CLOB refuses orders from this egress IP's
+    # jurisdiction. Never recovers within a retry window — retrying just hammers
+    # a permanently-blocked endpoint and stalls the single-threaded executor.
+    "restricted in your region",
+    "geoblock",
 )
 
 

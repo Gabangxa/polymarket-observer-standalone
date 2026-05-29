@@ -133,6 +133,9 @@ class TestIsRetryable:
         "nonce already used",
         "order already exists",
         "order has expired",
+        # Region geoblock 403 — must not retry (would hammer a permanent block)
+        "HTTP 403 body={'error': 'Trading restricted in your region, please refer "
+        "to available regions - https://docs.polymarket.com/developers/CLOB/geoblock'}",
     ])
     def test_validation_errors_are_not_retryable(self, msg):
         assert om._is_retryable(Exception(msg)) is False
