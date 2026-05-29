@@ -26,6 +26,26 @@ def _webhook() -> str | None:
     return _WEBHOOK or None
 
 
+def check_alerting_configured() -> bool:
+    """Log loudly at startup if the alert channel is unconfigured.
+
+    Every _send() silently no-ops when DISCORD_WEBHOOK_URL is unset — which
+    means a misconfigured alert channel hides ALL alerts, including the crash
+    alerts whose entire job is to make failures visible. That violates the
+    fail-loudly contract. Call this once at startup so an unset webhook is
+    itself a visible WARNING. Returns True if alerting is configured.
+    """
+    if _webhook():
+        logger.info("Discord alerting configured — alerts will be delivered")
+        return True
+    logger.warning(
+        "DISCORD_WEBHOOK_URL is not set — all alerts (crashes, fills, "
+        "cancel-all, drift) will be SILENTLY DROPPED. Set it in the bot "
+        "service variables to restore alerting."
+    )
+    return False
+
+
 def _send(content: str) -> None:
     """POST a message to the Discord webhook. Silent on failure."""
     url = _webhook()
