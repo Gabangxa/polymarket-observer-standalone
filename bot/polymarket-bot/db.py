@@ -35,6 +35,17 @@ logger = logging.getLogger(__name__)
 _POOL_MIN = 1
 _POOL_MAX = 4
 
+# Connection-level timeouts. Without these a query can block forever on a
+# half-open TCP socket (network blip, DB failover, idle NAT reap) — the failure
+# mode that hung the executor thread silently for 24h on 2026-05-18 (is_alive()
+# stays True, nothing is raised, logs go dark). With them, a stuck query RAISES
+# instead, so the executor's per-cycle try/except logs it and survives.
+#   statement_timeout : server aborts any single statement past this (ms).
+#   connect_timeout   : cap on the initial TCP connect (secs).
+#   keepalives*       : detect a dead peer at the socket layer (~60s here).
+_STATEMENT_TIMEOUT_MS = int(os.environ.get("DB_STATEMENT_TIMEOUT_MS", "30000"))
+_CONNECT_TIMEOUT_SECS = int(os.environ.get("DB_CONNECT_TIMEOUT_SECS", "10"))
+
 _pool: psycopg2.pool.ThreadedConnectionPool | None = None
 _pool_lock = threading.Lock()
 
@@ -63,8 +74,18 @@ def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
             _POOL_MAX,
             _get_url(),
             cursor_factory=psycopg2.extras.RealDictCursor,
+            # libpq params forwarded to psycopg2.connect for every pooled conn.
+            connect_timeout=_CONNECT_TIMEOUT_SECS,
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=3,
+            options=f"-c statement_timeout={_STATEMENT_TIMEOUT_MS}",
         )
-        logger.info(f"DB connection pool ready (min={_POOL_MIN}, max={_POOL_MAX})")
+        logger.info(
+            f"DB connection pool ready (min={_POOL_MIN}, max={_POOL_MAX}, "
+            f"statement_timeout={_STATEMENT_TIMEOUT_MS}ms, connect_timeout={_CONNECT_TIMEOUT_SECS}s)"
+        )
         return _pool
 
 
@@ -1389,6 +1410,39 @@ def set_config(key: str, value: str) -> None:
                 ON CONFLICT (key) DO UPDATE
                     SET value = EXCLUDED.value, updated_at = NOW()
             """, (key, value))
+
+
+# ── executor heartbeat (liveness/progress telemetry) ──────────────────────────
+# The executor writes a heartbeat every cycle. The scheduler watchdog reads it
+# to detect a HUNG executor — one that is_alive() but making no progress (the
+# 2026-05-18 silent-hang failure mode). Stored as an ISO-8601 string under the
+# `executor_heartbeat_at` key; no schema change (bot_config is a KV table).
+_HEARTBEAT_KEY = "executor_heartbeat_at"
+
+
+def touch_executor_heartbeat() -> None:
+    """Record that the executor completed a cycle. Called once per executor loop."""
+    set_config(_HEARTBEAT_KEY, datetime.now(timezone.utc).isoformat())
+
+
+def _heartbeat_age_secs(iso_str: str | None, now: datetime | None = None) -> float | None:
+    """Pure helper: seconds between `iso_str` and `now`. None if unparseable/missing.
+    Kept DB-free so the staleness logic is unit-testable without Postgres."""
+    if not iso_str:
+        return None
+    try:
+        ts = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    return (now - ts).total_seconds()
+
+
+def seconds_since_executor_heartbeat() -> float | None:
+    """Age of the last executor heartbeat in seconds, or None if never set / unreadable."""
+    return _heartbeat_age_secs(get_config(_HEARTBEAT_KEY))
 
 
 def get_bankroll() -> float:

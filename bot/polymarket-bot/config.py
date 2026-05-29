@@ -104,6 +104,12 @@ MAX_PORTFOLIO_PCT     = 0.33   # max fraction of bankroll open across all positi
 MAX_SIGNAL_AGE_SECS   = 60     # reject signals older than this (seconds)
 ORDER_MAX_RETRIES     = 5      # exponential backoff attempts before REJECTED
 EXECUTOR_POLL_SECS    = 10     # fallback poll interval (NATS fast-path is faster)
+# Scheduler watchdog: if the executor's heartbeat is older than this, the thread
+# is considered hung (alive but not progressing — the 2026-05-18 failure mode).
+# Default 180s ≈ 18 missed beats at EXECUTOR_POLL_SECS — unambiguous, well clear
+# of a single slow cycle. The watchdog cancels open orders and exits non-zero so
+# Railway (restartPolicyType=ON_FAILURE) brings up a clean process.
+EXECUTOR_HEARTBEAT_STALE_SECS = int(os.environ.get("EXECUTOR_HEARTBEAT_STALE_SECS", "180"))
 # EXECUTION_STRATEGIES is read from the env var of the same name (Railway service variable).
 # Set it to a comma-separated list to restrict which engines place live orders.
 # Unknown strategy names are silently dropped; an empty result means no orders execute.

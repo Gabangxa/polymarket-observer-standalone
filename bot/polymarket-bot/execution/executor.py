@@ -267,6 +267,13 @@ def run_executor() -> None:
     _CHECK_EVERY      = 30   # run connection check on cycle 1 then every ~5 min (30 × 10s)
     _RECONCILE_EVERY  = 30   # same cadence — DB↔CLOB order state sync
 
+    # Seed the heartbeat before the first (potentially slow) cycle so the
+    # scheduler watchdog doesn't read a missing/stale beat during cold start.
+    try:
+        db.touch_executor_heartbeat()
+    except Exception as _hb:
+        logger.warning(f"Initial heartbeat write failed: {_hb}")
+
     while True:
         placed   = 0
         repriced = 0
@@ -331,6 +338,17 @@ def run_executor() -> None:
             "placed":   placed,
             "repriced": repriced,
         })
+
+        # Durable heartbeat: the scheduler watchdog reads this to tell a hung
+        # executor (alive but not progressing) from a healthy one. Written every
+        # cycle regardless of pause state — a paused executor is still healthy.
+        # Best-effort: a heartbeat write that fails (or times out under the new
+        # statement_timeout) must not kill the loop; the missed beat is itself
+        # the signal the watchdog acts on if it persists.
+        try:
+            db.touch_executor_heartbeat()
+        except Exception as _hb:
+            logger.warning(f"Heartbeat write failed: {_hb}")
 
         # Fast-path: wake immediately on new NATS signal, fall back to timed poll
         _SIGNAL_EVENT.wait(timeout=EXECUTOR_POLL_SECS)
