@@ -9,7 +9,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 
 import alerts
 import db
@@ -63,6 +63,74 @@ def _invalidate_tick(token_id: str) -> None:
     Use after the CLOB rejects an order with an invalid-tick-size error —
     the market's tick has likely tightened or loosened across a price boundary."""
     _TICK_CACHE.pop(token_id, None)
+
+
+# Static fallback floor (USDC notional). Used by _size_from_signal to skip
+# sub-minimum sizes before any client call, and as the fallback when the
+# per-market CLOB minimum lookup fails. Polymarket's documented floor is $1;
+# we keep a conservative $5 so dust orders never reach the book.
+_MIN_ORDER_USDC = Decimal("5.0")
+
+# Min-order-size cache: token_id → (Decimal min_shares, fetched_at unix-secs).
+# The CLOB enforces a per-market minimum order size denominated in SHARES,
+# exposed on the order book as `min_order_size`. It is the authoritative floor;
+# _MIN_ORDER_USDC is only the fallback when the lookup fails. Cached with the
+# same TTL as the tick size so churned strategy cycles stay cheap.
+_MIN_SIZE_CACHE: dict[str, tuple[Decimal, float]] = {}
+
+
+def _min_order_shares(client, token_id: str, price: Decimal) -> Decimal:
+    """
+    Minimum order size in SHARES the CLOB will accept for this token.
+
+    Reads the order book's `min_order_size` (shares). On any failure, falls
+    back to deriving the share count from the static _MIN_ORDER_USDC floor at
+    the given price, rounded UP so the fallback never lands below a real
+    minimum. Never raises — a lookup blip must not block order placement.
+    """
+    cached = _MIN_SIZE_CACHE.get(token_id)
+    if cached is not None:
+        shares, fetched_at = cached
+        if time.time() - fetched_at < _TICK_CACHE_TTL_SECS:
+            return shares
+
+    shares: Decimal
+    try:
+        ob = client.get_order_book(token_id)
+        raw = ob.get("min_order_size") if isinstance(ob, dict) else getattr(ob, "min_order_size", None)
+        if raw is None:
+            raise ValueError("min_order_size missing from order book")
+        shares = Decimal(str(raw))
+        if shares <= 0:
+            raise ValueError(f"non-positive min_order_size: {raw}")
+    except Exception as e:
+        fallback = (_MIN_ORDER_USDC / price).quantize(Decimal("0.01"), rounding=ROUND_UP)
+        logger.warning(
+            f"min_order_size lookup failed for token={token_id[:24]}…: {e} "
+            f"— using ${_MIN_ORDER_USDC} fallback = {fallback} shares @ {price}"
+        )
+        shares = fallback
+
+    _MIN_SIZE_CACHE[token_id] = (shares, time.time())
+    return shares
+
+
+def _enforce_min_shares(client, token_id: str, price: Decimal, size_shares: Decimal) -> Decimal:
+    """
+    Bump size_shares up to the CLOB's per-market minimum if it falls below.
+    Returns the (possibly increased) share count quantized to 2dp. This lets a
+    sub-minimum computed size still produce a placeable order rather than a
+    non-retryable 'min size' rejection that silently consumes the signal.
+    """
+    min_shares = _min_order_shares(client, token_id, price)
+    if size_shares < min_shares:
+        bumped = min_shares.quantize(Decimal("0.01"), rounding=ROUND_UP)
+        logger.info(
+            f"Order size below CLOB minimum — bumping {size_shares} → {bumped} shares "
+            f"| token={token_id[:24]}…"
+        )
+        return bumped
+    return size_shares
 
 
 def _gtd_expiration(strategy: str) -> int:
@@ -208,8 +276,11 @@ def _size_from_signal(signal: dict, side: str) -> Decimal:
       1. Kelly fraction from metadata, capped at per_position_pct * bankroll.
       2. No Kelly → default to per_position_pct * bankroll (the full cap).
 
-    Returns 0 only when the bankroll is unset or the computed size rounds to zero.
-    Sub-minimum sizes are submitted as-is and let the CLOB enforce its own floor.
+    Returns 0 when the bankroll is unset, the computed size rounds to zero, or
+    the size falls below the static _MIN_ORDER_USDC floor — the caller treats a
+    zero size as "skip this signal" rather than submitting dust to the CLOB.
+    The per-market CLOB minimum is enforced separately at placement time via
+    _enforce_min_shares (it needs the client and price, unavailable here).
     """
     import db as _db
     bankroll = _db.get_bankroll()
@@ -231,6 +302,9 @@ def _size_from_signal(signal: dict, side: str) -> Decimal:
         size = min(raw, cap).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
     else:
         size = cap
+
+    if size < _MIN_ORDER_USDC:
+        return Decimal("0")
 
     return size
 
@@ -327,11 +401,17 @@ def _place_neg_risk_legs(signal: dict, client) -> dict:
             logger.warning(f"Neg-risk leg skipped — {e} | market={market_id}")
             continue
         price       = Decimal(str(yes_ask)).quantize(tick, rounding=ROUND_DOWN)
+        if price <= 0:
+            logger.warning(f"Neg-risk leg skipped — price rounded to zero (raw={yes_ask}) | market={market_id}")
+            continue
         size_usdc   = _MIN_ORDER_USDC
         # Polymarket CLOB enforces 2-decimal share precision regardless of tick size
         # (py-clob-client ROUNDING_CONFIG: size=2 for every tick). Anything finer is
         # silently rejected as "Invalid order inputs".
         size_shares = (size_usdc / price).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+        # Honour the per-market CLOB minimum (shares) and re-derive notional.
+        size_shares = _enforce_min_shares(client, token_id, price, size_shares)
+        size_usdc   = (price * size_shares).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
         expiration  = _gtd_expiration("neg_risk_overround")
         expiration_dt = datetime.fromtimestamp(expiration, tz=timezone.utc)
         clord_id    = _make_clord_id("negrisk", signal_id)
@@ -492,6 +572,9 @@ def _place_neg_risk_maker_legs(signal: dict, client) -> dict:
 
         size_usdc   = _MIN_ORDER_USDC
         size_shares = (size_usdc / price).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+        # Honour the per-market CLOB minimum (shares) and re-derive notional.
+        size_shares = _enforce_min_shares(client, yes_token_id, price, size_shares)
+        size_usdc   = (price * size_shares).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
         expiration  = _gtd_expiration("neg_risk_overround")
         expiration_dt = datetime.fromtimestamp(expiration, tz=timezone.utc)
         clord_id    = _make_clord_id("negrsk_m", signal_id)
@@ -670,6 +753,12 @@ def place_order(signal: dict, client, reprice_of: int = None) -> dict:
     # 2-decimal precision is mandatory — py-clob-client ROUNDING_CONFIG uses size=2 for every
     # tick size, and the CLOB rejects anything finer as "Invalid order inputs".
     size_shares = (size_usdc / price).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+
+    # Enforce the per-market CLOB minimum order size. If the computed share count
+    # is below it, bump up so the order is placeable rather than non-retryably
+    # rejected; recompute size_usdc so the DB exposure record matches what ships.
+    size_shares = _enforce_min_shares(client, token_id, price, size_shares)
+    size_usdc   = (price * size_shares).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
 
     expiration    = _gtd_expiration(strategy)
     expiration_dt = datetime.fromtimestamp(expiration, tz=timezone.utc)
@@ -1040,42 +1129,62 @@ def place_exit_order(position: dict, price: float, client) -> dict:
 
 def cancel_all_open_orders(client) -> dict:
     """
-    Cancel every non-terminal order.
-    Uses client.cancel_all() for CLOB orders (one API call), then closes any
-    DB-only orders (no exchange_order_id) that never reached the CLOB.
-    Returns a summary dict: {attempted, succeeded, failed, db_only}.
+    Cancel every non-terminal order. This is the kill switch — DB state must
+    never claim an order is canceled while it is still live on the CLOB.
+
+    Uses client.cancel_all() for CLOB orders (one API call). A DB row is moved
+    to CANCELED only when:
+      • it never reached the CLOB (no exchange_order_id) — safe to close, or
+      • the CLOB cancel_all() call succeeded — the order is confirmed gone.
+    If cancel_all() fails, CLOB-backed orders are LEFT OPEN so the reconciler
+    (and a retried kill switch) can still act on them. Marking them CANCELED
+    here would hide live orders from reconciliation — the exact failure mode
+    this kill switch exists to prevent.
+
+    Returns a summary dict: {attempted, succeeded, failed, db_only, clob_ok}.
     """
     open_orders = db.get_open_orders()
     attempted   = len(open_orders)
     db_only     = sum(1 for o in open_orders if not o.get("exchange_order_id"))
     clob_count  = attempted - db_only
 
-    # Single API call cancels everything on the CLOB
-    clob_failed = 0
+    # Single API call cancels everything on the CLOB.
+    clob_ok = True
     if clob_count > 0:
         try:
             def _cancel_all():
                 return client.cancel_all()
             _backoff_retry(_cancel_all)
         except Exception as e:
+            clob_ok = False
             logger.error(f"cancel_all CLOB call failed: {e}")
-            clob_failed = clob_count
 
-    # Sync DB for all open orders regardless of API outcome
-    now = datetime.now(timezone.utc)
+    now      = datetime.now(timezone.utc)
+    canceled = 0
     for order in open_orders:
-        db.update_order_status(order["clord_id"], "CANCELED", canceled_at=now)
+        has_eoi = bool(order.get("exchange_order_id"))
+        # DB-only orders are always safe to close. CLOB-backed orders only when
+        # the cancel call succeeded — otherwise leave them OPEN for reconciliation.
+        if not has_eoi or clob_ok:
+            db.update_order_status(order["clord_id"], "CANCELED", canceled_at=now)
+            canceled += 1
 
-    succeeded = attempted - clob_failed
+    clob_failed = 0 if clob_ok else clob_count
     summary = {
         "attempted": attempted,
-        "succeeded": succeeded,
+        "succeeded": canceled,
         "failed":    clob_failed,
         "db_only":   db_only,
+        "clob_ok":   clob_ok,
     }
+    if not clob_ok:
+        logger.error(
+            f"cancel_all_open_orders: CLOB cancel FAILED — {clob_count} order(s) "
+            f"left OPEN in DB and live on the CLOB; reconciler/retry must clear them"
+        )
     logger.warning(
         f"cancel_all_open_orders | attempted={attempted} "
-        f"succeeded={succeeded} failed={clob_failed} db_only={db_only}"
+        f"succeeded={canceled} failed={clob_failed} db_only={db_only} clob_ok={clob_ok}"
     )
     alerts.cancel_all_fired(summary)
     return summary

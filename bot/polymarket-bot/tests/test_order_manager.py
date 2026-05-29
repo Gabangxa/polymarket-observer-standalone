@@ -375,3 +375,134 @@ class TestPlaceOrderRouting:
         rejected_calls = [c for c in mock_db.update_order_status.call_args_list
                           if c.args[1] == "REJECTED"]
         assert len(rejected_calls) == 1
+
+
+# ── _min_order_shares / _enforce_min_shares ────────────────────────────────────
+
+class TestMinOrderShares:
+    def setup_method(self):
+        om._MIN_SIZE_CACHE.clear()
+
+    def test_reads_min_order_size_from_book(self):
+        client = MagicMock()
+        client.get_order_book.return_value = {"min_order_size": "15"}
+        shares = om._min_order_shares(client, "tok_a", Decimal("0.50"))
+        assert shares == Decimal("15")
+
+    def test_caches_second_call(self):
+        client = MagicMock()
+        client.get_order_book.return_value = {"min_order_size": "8"}
+        om._min_order_shares(client, "tok_a", Decimal("0.50"))
+        om._min_order_shares(client, "tok_a", Decimal("0.50"))
+        client.get_order_book.assert_called_once()
+
+    def test_falls_back_to_usdc_floor_on_failure(self):
+        client = MagicMock()
+        client.get_order_book.side_effect = Exception("book unavailable")
+        # _MIN_ORDER_USDC (5.0) / 0.50 = 10, rounded up
+        shares = om._min_order_shares(client, "tok_a", Decimal("0.50"))
+        assert shares == Decimal("10.00")
+
+    def test_enforce_bumps_below_minimum(self):
+        client = MagicMock()
+        client.get_order_book.return_value = {"min_order_size": "20"}
+        out = om._enforce_min_shares(client, "tok_a", Decimal("0.50"), Decimal("5"))
+        assert out == Decimal("20")
+
+    def test_enforce_leaves_sufficient_size_untouched(self):
+        client = MagicMock()
+        client.get_order_book.return_value = {"min_order_size": "5"}
+        out = om._enforce_min_shares(client, "tok_a", Decimal("0.50"), Decimal("100"))
+        assert out == Decimal("100")
+
+
+# ── neg-risk placement (regression: _MIN_ORDER_USDC must be defined) ───────────
+
+class TestNegRiskPlacement:
+    def setup_method(self):
+        om._TICK_CACHE.clear()
+        om._MIN_SIZE_CACHE.clear()
+
+    def test_taker_leg_places_without_nameerror(self):
+        """_MIN_ORDER_USDC was deleted while still referenced here — this guards it."""
+        client = MagicMock()
+        client.get_tick_size.return_value = "0.01"
+        client.get_order_book.return_value = {"min_order_size": "5"}
+        client.create_order.return_value = "signed_blob"
+        client.post_order.return_value = {"orderID": "exch_negrisk"}
+
+        signal = {
+            "id":       501,
+            "strategy": "neg_risk_overround",
+            "market_id": "evt_top",
+            "metadata": {"outcomes": [{"market_id": "m1", "yes_ask": 0.30}]},
+        }
+        stack = [
+            patch.object(om, "db"),
+            patch.object(om, "alerts"),
+            patch.object(om, "nats_bus"),
+        ]
+        mocks = [p.start() for p in stack]
+        mock_db = mocks[0]
+        mock_db.get_token_ids_for_markets.return_value = {"m1": ["tok_m1"]}
+        mock_db.insert_order.return_value = 1
+        try:
+            result = om.place_order(signal, client)
+        finally:
+            for p in stack:
+                p.stop()
+
+        assert result["ok"] is True
+        assert client.post_order.call_count == 1
+
+
+# ── cancel_all_open_orders (kill switch must not corrupt DB on failure) ────────
+
+class TestCancelAllOpenOrders:
+    def _orders(self):
+        return [
+            {"clord_id": "a", "exchange_order_id": "e1"},   # CLOB-backed
+            {"clord_id": "b", "exchange_order_id": None},   # DB-only, never reached CLOB
+        ]
+
+    def test_clob_success_cancels_all(self):
+        client = MagicMock()
+        client.cancel_all.return_value = {}
+        stack = [patch.object(om, "db"), patch.object(om, "alerts")]
+        mocks = [p.start() for p in stack]
+        mock_db = mocks[0]
+        mock_db.get_open_orders.return_value = self._orders()
+        try:
+            summary = om.cancel_all_open_orders(client)
+        finally:
+            for p in stack:
+                p.stop()
+
+        assert summary["clob_ok"] is True
+        assert summary["succeeded"] == 2
+        assert summary["failed"] == 0
+        canceled = {c.args[0] for c in mock_db.update_order_status.call_args_list
+                    if c.args[1] == "CANCELED"}
+        assert canceled == {"a", "b"}
+
+    def test_clob_failure_leaves_live_orders_open(self):
+        client = MagicMock()
+        client.cancel_all.side_effect = Exception("CLOB unreachable")
+        stack = [patch.object(om, "db"), patch.object(om, "alerts"),
+                 patch.object(om.time, "sleep")]
+        mocks = [p.start() for p in stack]
+        mock_db = mocks[0]
+        mock_db.get_open_orders.return_value = self._orders()
+        try:
+            summary = om.cancel_all_open_orders(client)
+        finally:
+            for p in stack:
+                p.stop()
+
+        assert summary["clob_ok"] is False
+        assert summary["failed"] == 1          # the one CLOB-backed order
+        canceled = {c.args[0] for c in mock_db.update_order_status.call_args_list
+                    if c.args[1] == "CANCELED"}
+        # Only the DB-only order is closed; the live CLOB order stays OPEN.
+        assert canceled == {"b"}
+        assert "a" not in canceled
