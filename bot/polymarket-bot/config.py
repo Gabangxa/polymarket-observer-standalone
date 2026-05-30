@@ -1,4 +1,5 @@
 # config.py — single source of truth for all constants
+import os
 
 # ── API base URLs ──────────────────────────────────────────────────────────────
 GAMMA_API  = "https://gamma-api.polymarket.com"
@@ -6,16 +7,17 @@ CLOB_API   = "https://clob.polymarket.com"
 DATA_API   = "https://data-api.polymarket.com"
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
-POLL_INTERVAL_SECONDS = 300   # 5 minutes between full pipeline runs
+POLL_INTERVAL_SECONDS = 30   # seconds between pipeline runs (≈ 3 min per scan cycle at SCAN_INTERVAL_RUNS=6)
 
 # ── Market scanner filters ────────────────────────────────────────────────────
 SCANNER_LIMIT           = 100   # markets fetched per page from Gamma
 SCANNER_PAGES           = 5     # pages to scan (= up to 500 markets); increased to offset tighter time filter
 MIN_VOLUME_24H          = 5_000  # USD — ignore micro-markets
 MIN_LIQUIDITY           = 2_000  # USD — need enough depth to matter
-MIN_HOURS_TO_CLOSE      = 24    # skip markets expiring within 24h
+MIN_TOP_BOOK_DEPTH      = 50    # USD — minimum size available at the best bid/ask to consider the spread/arb valid
+MIN_HOURS_TO_CLOSE      = 1      # Allow scanning right up to the final hours
 MAX_HOURS_TO_CLOSE      = 168   # skip markets expiring beyond 7 days — laser focus on short-resolution markets
-MAX_WATCHLIST_SIZE      = 20    # keep the watchlist focused
+MAX_WATCHLIST_SIZE      = 50    # broader opportunity surface across strategies
 
 # Price range filter for strategy relevance:
 # - Spread engine:    best between 0.20–0.80 (fees are meaningful)
@@ -28,6 +30,9 @@ PRICE_MAX = 0.95
 PRICE_HISTORY_FIDELITY  = "1h"   # interval for price history (1m, 5m, 1h, 1d)
 PRICE_HISTORY_LIMIT     = 168    # data points to fetch (168 × 1h = 7 days)
 SNAPSHOT_RETENTION_DAYS = 30     # snapshots older than this are eligible for cleanup
+# Deep collection (price_history, open_interest, top_holders, recent_trades) runs every
+# Nth pipeline tick. Light fields (midpoint, spread, yes/no ask, fee) run every tick.
+DEEP_COLLECTION_INTERVAL = 6     # 1 deep run per 6 ticks ≈ every 3 min at 30s poll
 
 # ── Spread engine thresholds ──────────────────────────────────────────────────
 # Fee formula: fee = C × p × feeRate × (p × (1-p))^exponent
@@ -36,17 +41,15 @@ SNAPSHOT_RETENTION_DAYS = 30     # snapshots older than this are eligible for cl
 # Flag a market when spread > SPREAD_FEE_MULTIPLE × estimated_fee
 SPREAD_FEE_MULTIPLE     = 2.0    # spread must be at least 2× the fee to be interesting
 SPREAD_MIN_SIGNAL_SCORE = 0.6    # 0–1 score threshold to include in report
+SPREAD_MIN_YES_PRICE    = 0.05   # reject markets effectively resolved NO (< 5¢)
+SPREAD_MAX_YES_PRICE    = 0.95   # reject markets effectively resolved YES (> 95¢)
 
 # ── Neg-risk engine thresholds ────────────────────────────────────────────────
-# In a neg-risk event, sum(all outcome prices) should be ≤ 1.0
-# When it exceeds this, there's a theoretical risk-free trade
-NEG_RISK_OVERROUND_THRESHOLD = 1.02   # flag when sum > 1.02 (2¢ of slack)
-NEG_RISK_MIN_OUTCOMES        = 3      # only interesting with 3+ outcomes
-
-# ── Reversion engine thresholds ──────────────────────────────────────────────
-REVERSION_PRICE_MOVE_THRESHOLD = 0.08   # 8 cent move in a short window
-REVERSION_WINDOW_HOURS         = 2      # look back this many hours for the move
-REVERSION_MAX_OI               = 50_000 # USD — only flag thin markets
+# TAKER: Buy all outcomes instantly. Sum of ASKS must be < 1.0 (after fees).
+NEG_RISK_TAKER_THRESHOLD = 0.98      # flag when sum(asks) < 0.98
+# MAKER: Sell all outcomes. Sum of BIDS must be > 1.0 (after fees).
+NEG_RISK_MAKER_THRESHOLD = 1.02      # flag when sum(bids) > 1.02
+NEG_RISK_MIN_OUTCOMES    = 3         # only interesting with 3+ outcomes
 
 # ── Fee rate lookup (post March-30 structure) ─────────────────────────────────
 # Used by spread engine to estimate fee cost. Maps category tag → (rate, exponent)
@@ -63,10 +66,6 @@ FEE_RATES = {
     "other":       (0.2,   2),
 }
 DEFAULT_FEE_RATE = (0.04, 1)  # fallback if category not matched
-
-# ── Odds shift engine ─────────────────────────────────────────────────────────
-ODDS_SHIFT_THRESHOLD    = 0.05   # minimum price delta (5¢) to emit a signal
-ODDS_SHIFT_MIN_HOURS    = 0.25   # minimum elapsed hours between snapshots to compute velocity
 
 # ── EV calculator ─────────────────────────────────────────────────────────────
 EV_MIN_THRESHOLD        = 0.03   # minimum EV (3%) to include annotation
@@ -92,9 +91,112 @@ MICRO_EVENT_KEYWORDS: dict[str, list[str]] = {
     "geopolitical":  ["war", "invasion", "sanction", "nato", "missile", "attack", "troops"],
 }
 
+# ── Tail-yield engine ─────────────────────────────────────────────────────────
+YIELD_MIN_PRICE         = 0.90   # minimum YES price eligible for yield harvest
+YIELD_HOURS_TO_EXPIRY   = 48     # skip markets expiring beyond this many hours
+
+# ── Execution layer — risk and strategy parameters ────────────────────────────
+# BANKROLL_USDC is read from the BANKROLL_USDC env var (set in Railway service variables).
+# Defaults to 0.0 (execution blocked) so a missing var never causes over-exposure.
+BANKROLL_USDC         = float(os.environ.get("BANKROLL_USDC", "0.0"))
+MAX_POSITION_PCT      = 0.10   # max fraction of bankroll per single position
+MAX_PORTFOLIO_PCT     = 0.33   # max fraction of bankroll open across all positions
+MAX_SIGNAL_AGE_SECS   = 60     # reject signals older than this (seconds)
+# Resolution-sanity gate (pre_trade_gate._check_resolution_sanity):
+# spread_engine captures spread then exits — it must not enter so close to
+# resolution that the position is dominated by the binary outcome. Reject a
+# spread entry with less than this many hours of runway to end_date. Does NOT
+# apply to tail_yield_engine (targets near-expiry by design) or neg_risk
+# (held to resolution by design).
+ENTRY_MIN_HOURS_TO_RESOLUTION   = 6.0
+# A market title asserting a deadline already this many hours in the past is
+# treated as stale/relisted metadata: the title contradicts the (future)
+# end_date that let it pass the scanner. Block entry on all strategies.
+TITLE_DEADLINE_PAST_GRACE_HOURS = 24
+ORDER_MAX_RETRIES     = 5      # exponential backoff attempts before REJECTED
+EXECUTOR_POLL_SECS    = 10     # fallback poll interval (NATS fast-path is faster)
+# Scheduler watchdog: if the executor's heartbeat is older than this, the thread
+# is considered hung (alive but not progressing — the 2026-05-18 failure mode).
+# Default 180s ≈ 18 missed beats at EXECUTOR_POLL_SECS — unambiguous, well clear
+# of a single slow cycle. The watchdog cancels open orders and exits non-zero so
+# Railway (restartPolicyType=ON_FAILURE) brings up a clean process.
+EXECUTOR_HEARTBEAT_STALE_SECS = int(os.environ.get("EXECUTOR_HEARTBEAT_STALE_SECS", "180"))
+# EXECUTION_STRATEGIES is read from the env var of the same name (Railway service variable).
+# Set it to a comma-separated list to restrict which engines place live orders.
+# Unknown strategy names are silently dropped; an empty result means no orders execute.
+# Defaults to all three engines when the var is unset.
+# Examples:
+#   EXECUTION_STRATEGIES=tail_yield_engine
+#   EXECUTION_STRATEGIES=spread_engine,tail_yield_engine
+_KNOWN_STRATEGIES = {"spread_engine", "tail_yield_engine", "neg_risk_overround"}
+_DEFAULT_STRATEGIES = ["spread_engine", "tail_yield_engine", "neg_risk_overround"]
+_raw_strategies = os.environ.get("EXECUTION_STRATEGIES", "").strip()
+if _raw_strategies:
+    EXECUTION_STRATEGIES = [
+        s.strip() for s in _raw_strategies.split(",")
+        if s.strip() in _KNOWN_STRATEGIES
+    ]
+else:
+    EXECUTION_STRATEGIES = _DEFAULT_STRATEGIES
+
+EXECUTION_MIN_SCORE   = float(os.environ.get("EXECUTION_MIN_SCORE", "0.75"))
+
+# GTD order lifetimes (seconds). Polymarket enforces a 60s minimum buffer on top.
+ORDER_TTL_SPREAD_SECS   = 600    # spread_engine: 10 min — stale quote = no edge
+ORDER_TTL_NEG_RISK_SECS = 120    # neg_risk_overround: 2 min — arb closes fast, partial fills are risky
+ORDER_TTL_TAIL_SECS     = 3600   # tail_yield_engine: 60 min — near-certain prices move slowly
+ORDER_TTL_EXIT_SECS     = 3600   # exit orders: 60 min — if unfilled in an hour, market is illiquid
+
+# ── Exit manager — dynamic exit thresholds ───────────────────────────────────
+# tail_yield: exit when annualised hold-yield drops below this floor.
+#   hold_yield = (1 - price) / price × (8760 / hours_to_expiry)
+#   At 0.98 with 48h left ≈ 3.7% — below threshold → exit.
+#   At 0.97 with 1h left  ≈ 277%  — above threshold → hold.
+TAIL_YIELD_MIN_HOLD_YIELD = 0.10   # 10% annualised floor
+
+# spread_engine: exit when live spread compresses to ≤ this multiple of the
+# estimated round-trip fee. 1.5× means exit while a thin edge still exists.
+SPREAD_EXIT_FEE_MULTIPLE  = 1.5
+
+# Trailing stop — ratchets up as price rises; triggers if price retreats
+# more than TRAIL_PIPS below the running peak since position was opened.
+# Only activates after position has shown any profit (peak > avg_cost).
+TRAIL_PIPS_TAIL           = 0.005  # 0.5¢ for tail_yield (high-conviction, tight)
+TRAIL_PIPS_SPREAD         = 0.01   # 1¢   for spread_engine
+
+# Exit price floor — refuse to exit into a thin market that has crashed past
+# this giveback fraction relative to avg_cost. Skips the exit attempt and
+# re-evaluates on the next snapshot; if the bid recovers, exit fires later;
+# if it stays below floor, position holds to resolution. Bounds the worst-case
+# slippage on tail markets where the spread can blow out near expiry.
+# Set to 0 to disable the floor (always exit on trigger).
+EXIT_MAX_GIVEBACK_PCT     = 0.05   # default 5% — exit at 0.97 floors at 0.9215
+
+# ── Infrastructure — set in Railway service variables, never in code ──────────
+# BANKROLL_USDC        — USDC allocated to execution  (read above in this file)
+# POLYGON_PRIVATE_KEY  — L1 wallet key               (read in execution/auth.py)
+# NATS_URL             — NATS server endpoint         (read in nats_bus.py)
+# SIGNAL_WEBHOOK_URL   — external HTTP webhook        (read in webhook_dispatcher.py)
+# POLYMARKET_CHAIN_ID  — 137 mainnet / 80002 testnet  (read in execution/auth.py)
+SIGNAL_WEBHOOK_URL      = os.environ.get("SIGNAL_WEBHOOK_URL", "")
+NATS_URL                = os.environ.get("NATS_URL", "")
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_RETENTION_DAYS      = 14   # delete log files older than this many days
-ZERO_SIGNAL_STREAK_WARN = 6    # warn after N consecutive zero-signal runs (~30 min at 5 min interval)
+ZERO_SIGNAL_STREAK_WARN = 6    # warn after N consecutive zero-signal runs (~3 min at 30s interval)
+
+# ── Alert rate limits ───────────────────────────────────────────────────────────
+# Zero-signal streaks re-trigger every pipeline run once past the warn threshold;
+# without a cooldown that floods Discord every ~30s. Alert at most once per engine
+# per this window. Bump to 7200 for 2-hourly.
+ZERO_SIGNAL_ALERT_COOLDOWN_SECS = 3600   # 1 hour
+# Pre-CLOB order skips (size-above-cap, missing price, etc.) are alerted at most
+# once per skip-reason per this window so a systemic data bug can't flood the channel.
+ORDER_SKIPPED_ALERT_COOLDOWN_SECS = 3600   # 1 hour
+# Position drift re-detects every reconciler cycle (~5min) and stays drifted until
+# manual reconciliation, so without a cooldown it floods Discord. Alert at most once
+# per this window while drift persists.
+POSITION_DRIFT_ALERT_COOLDOWN_SECS = 1800   # 30 minutes
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 WATCHLIST_PATH   = "data/watchlist/watched_markets.json"

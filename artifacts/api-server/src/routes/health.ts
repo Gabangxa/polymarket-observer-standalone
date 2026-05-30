@@ -5,6 +5,16 @@ import { sql } from "drizzle-orm";
 
 const router: IRouter = Router();
 
+router.get("/auth/check", (req, res) => {
+  const configured = process.env.INTERNAL_API_KEY?.trim();
+  const provided = (req.headers["x-api-key"] as string | undefined)?.trim();
+  res.json({
+    keyConfigured: !!configured,
+    keyProvided: !!provided,
+    match: !configured || provided === configured,
+  });
+});
+
 router.get("/healthz", async (_req, res) => {
   try {
     const [marketCount] = await db.select({ n: sql<number>`cast(count(*) as int)` }).from(marketsTable);

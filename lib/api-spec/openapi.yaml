@@ -16,6 +16,8 @@ tags:
     description: Market snapshots
   - name: signals
     description: Strategy signals
+  - name: orders
+    description: Orders and positions
 paths:
   /healthz:
     get:
@@ -124,6 +126,13 @@ paths:
           schema:
             type: integer
             default: 336
+        - name: hours
+          in: query
+          description: >
+            If provided, return one snapshot per hour over the trailing window
+            (capped at 720h). Overrides limit-based pagination.
+          schema:
+            type: integer
       responses:
         "200":
           description: Market snapshots
@@ -153,6 +162,10 @@ paths:
           schema:
             type: integer
             default: 100
+        - name: resolved
+          in: query
+          schema:
+            type: boolean
       responses:
         "200":
           description: Signal list
@@ -178,6 +191,108 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SignalCreated"
+
+  /orders:
+    get:
+      operationId: listOrders
+      tags: [orders]
+      summary: List orders
+      description: Returns orders filtered by status group and optional date range
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, closed, all]
+            default: active
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 200
+        - name: since
+          in: query
+          description: ISO-8601 timestamp; only orders with created_at >= since are returned
+          schema:
+            type: string
+            format: date-time
+        - name: until
+          in: query
+          description: ISO-8601 timestamp; only orders with created_at < until are returned
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Order list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderListResponse"
+
+  /orders/cancel-all:
+    post:
+      operationId: cancelAllOrders
+      tags: [orders]
+      summary: Cancel all active orders
+      description: Sets all PENDING_SUBMISSION, SUBMITTED, and PARTIALLY_FILLED orders to CANCEL_REQUESTED
+      responses:
+        "200":
+          description: Cancel result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancelAllResult"
+
+  /orders/{id}:
+    delete:
+      operationId: cancelOrder
+      tags: [orders]
+      summary: Cancel a single order
+      description: Sets a single active order to CANCEL_REQUESTED status
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Canceled order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancelOrderResult"
+        "404":
+          description: Order not found or already closed
+
+  /positions:
+    get:
+      operationId: listPositions
+      tags: [orders]
+      summary: List open positions
+      description: Returns all positions with non-zero net exposure or working quantity
+      responses:
+        "200":
+          description: Position list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PositionListResponse"
+
+  /portfolio:
+    get:
+      operationId: getPortfolio
+      tags: [orders]
+      summary: Portfolio summary
+      description: Returns configured bankroll, live exposure, available capital, and aggregate PnL across all positions. Reads BANKROLL_USDC from the API server environment variable.
+      responses:
+        "200":
+          description: Portfolio summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PortfolioSummary"
 
   /signals/counts:
     get:
@@ -509,6 +624,19 @@ components:
         question:
           type: string
           nullable: true
+        executed:
+          type: boolean
+          nullable: true
+          description: >
+            True once the executor has handled this signal (placed an order
+            or skipped with a reason). Prevents re-processing each cycle.
+        executedSkipReason:
+          type: string
+          nullable: true
+          description: >
+            Set when the executor skipped placing an order for this signal
+            (e.g. size_below_floor, missing_token_id). Mutually exclusive
+            with orders.status='REJECTED' which records CLOB-side rejections.
       required:
         - id
         - strategy
@@ -566,6 +694,165 @@ components:
         - signals
         - count
 
+    Order:
+      type: object
+      properties:
+        id:
+          type: integer
+        clordId:
+          type: string
+        signalId:
+          type: integer
+          nullable: true
+        marketId:
+          type: string
+        tokenId:
+          type: string
+        side:
+          type: string
+        price:
+          type: string
+        sizeUsdc:
+          type: string
+        strategy:
+          type: string
+        status:
+          type: string
+        exchangeOrderId:
+          type: string
+          nullable: true
+        workingQty:
+          type: string
+          nullable: true
+        filledQty:
+          type: string
+          nullable: true
+        fillPrice:
+          type: string
+          nullable: true
+        submittedAt:
+          type: string
+          format: date-time
+          nullable: true
+        filledAt:
+          type: string
+          format: date-time
+          nullable: true
+        canceledAt:
+          type: string
+          format: date-time
+          nullable: true
+        errorMsg:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+          nullable: true
+        question:
+          type: string
+          nullable: true
+      required:
+        - id
+        - clordId
+        - marketId
+        - tokenId
+        - side
+        - price
+        - sizeUsdc
+        - strategy
+        - status
+
+    OrderListResponse:
+      type: object
+      properties:
+        orders:
+          type: array
+          items:
+            $ref: "#/components/schemas/Order"
+        count:
+          type: integer
+      required:
+        - orders
+        - count
+
+    CancelOrderResult:
+      type: object
+      properties:
+        id:
+          type: integer
+        status:
+          type: string
+      required:
+        - id
+        - status
+
+    CancelAllResult:
+      type: object
+      properties:
+        canceled:
+          type: integer
+      required:
+        - canceled
+
+    Position:
+      type: object
+      properties:
+        id:
+          type: integer
+        marketId:
+          type: string
+        tokenId:
+          type: string
+        side:
+          type: string
+        totalBought:
+          type: string
+          nullable: true
+        totalSold:
+          type: string
+          nullable: true
+        workingBuy:
+          type: string
+          nullable: true
+        workingSell:
+          type: string
+          nullable: true
+        avgCost:
+          type: string
+          nullable: true
+        pnlRealized:
+          type: string
+          nullable: true
+        pnlOpen:
+          type: string
+          nullable: true
+        lastUpdated:
+          type: string
+          format: date-time
+          nullable: true
+        question:
+          type: string
+          nullable: true
+      required:
+        - id
+        - marketId
+        - tokenId
+        - side
+
+    PositionListResponse:
+      type: object
+      properties:
+        positions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Position"
+        count:
+          type: integer
+      required:
+        - positions
+        - count
+
     SignalCountsResponse:
       type: object
       properties:
@@ -575,3 +862,32 @@ components:
             type: integer
       required:
         - counts
+
+    PortfolioSummary:
+      type: object
+      properties:
+        bankroll:
+          type: number
+          description: Configured bankroll (BANKROLL_USDC env var on API server)
+        atRisk:
+          type: number
+          description: Sum of sizeUsdc for all active orders
+        available:
+          type: number
+          description: bankroll minus atRisk
+        deployedPct:
+          type: number
+          description: atRisk / bankroll as a fraction (0–1)
+        pnlRealized:
+          type: number
+          description: Sum of pnl_realized across all positions
+        pnlOpen:
+          type: number
+          description: Sum of pnl_open across all positions
+      required:
+        - bankroll
+        - atRisk
+        - available
+        - deployedPct
+        - pnlRealized
+        - pnlOpen

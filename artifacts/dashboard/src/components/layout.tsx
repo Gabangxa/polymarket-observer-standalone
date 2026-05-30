@@ -1,125 +1,361 @@
+import { useState, useEffect } from "react";
 import { Link, useLocation } from "wouter";
+import { motion } from "framer-motion";
 import {
   Activity,
   BarChart2,
   Database,
   LayoutDashboard,
-  Clock,
   TrendingUp,
   BookOpen,
-  HelpCircle,
+  Radio,
+  Moon,
+  Sun,
+  Settings,
+  Globe,
+  Zap,
+  Bell,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useLiveHealth } from "@/hooks/use-polymarket";
+import { useTimezone, TIMEZONES } from "@/hooks/use-timezone";
+import { useAlertSettings } from "@/hooks/use-alert-settings";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 
-const navItems = [
-  { href: "/",           label: "Overview",    icon: LayoutDashboard },
-  { href: "/markets",    label: "Markets",     icon: BarChart2 },
-  { href: "/signals",    label: "Signals",     icon: Activity },
-  { href: "/performance",label: "Performance", icon: TrendingUp },
-  { href: "/snapshots",  label: "Data Feed",   icon: Database },
-  { href: "/docs",       label: "Guide & FAQ", icon: BookOpen },
+const NAV_ITEMS = [
+  { href: "/",             label: "Overview",    icon: LayoutDashboard },
+  { href: "/markets",      label: "Markets",     icon: BarChart2 },
+  { href: "/signals",      label: "Signals",     icon: Activity, badge: "live" },
+  { href: "/performance",  label: "Performance", icon: TrendingUp },
+  { href: "/execution",    label: "Execution",   icon: Zap },
+  { href: "/snapshots",    label: "Data Feed",   icon: Database },
+  { href: "/docs",         label: "Guide & FAQ", icon: BookOpen },
 ];
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const { data: health, isError } = useLiveHealth();
+  const [isDark, setIsDark] = useState(true);
+  const { timezone, setTimezone } = useTimezone();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const { settings, set } = useAlertSettings();
+
+  useEffect(() => {
+    if (isDark) {
+      document.documentElement.classList.remove("light");
+    } else {
+      document.documentElement.classList.add("light");
+    }
+  }, [isDark]);
 
   return (
-    <div className="min-h-screen bg-background text-foreground flex flex-col md:flex-row">
-      {/* Sidebar */}
-      <aside className="w-full md:w-64 border-r border-border bg-card/50 flex flex-col backdrop-blur-sm z-10 shrink-0">
-        <div className="p-6 border-b border-border flex items-center gap-3">
-          <img
-            src={`${import.meta.env.BASE_URL}logo.png`}
-            alt="PolyBot logo"
-            className="w-10 h-10 rounded-lg object-cover shrink-0"
-          />
-          <div>
-            <h1 className="font-bold text-lg leading-tight tracking-tight">PolyBot</h1>
-            <p className="text-xs text-muted-foreground font-mono">v1.0.0-beta</p>
+    <div
+      className="flex h-screen overflow-hidden font-sans"
+      style={{ background: "var(--color-app-bg)", color: "var(--color-text-primary)" }}
+    >
+      {/* ── Sidebar ───────────────────────────────────────────────── */}
+      <aside
+        className="w-16 lg:w-64 flex flex-col shrink-0 transition-all duration-300 z-20"
+        style={{
+          borderRight: "1px solid var(--color-app-border)",
+          background: "var(--color-app-surface)",
+        }}
+      >
+        {/* Logo */}
+        <div
+          className="h-16 flex items-center justify-center lg:justify-start lg:px-6 shrink-0"
+          style={{ borderBottom: "1px solid var(--color-app-border)" }}
+        >
+          <div
+            className="w-8 h-8 rounded-sm flex items-center justify-center shrink-0"
+            style={{
+              border: "1px solid var(--color-accent-primary)",
+              background: "color-mix(in srgb, var(--color-accent-primary) 10%, transparent)",
+            }}
+          >
+            <Radio className="w-5 h-5" style={{ color: "var(--color-accent-primary)" }} />
           </div>
+          <span
+            className="ml-3 text-sm font-semibold tracking-tight hidden lg:block"
+            style={{ color: "var(--color-text-primary)" }}
+          >
+            Observer
+          </span>
         </div>
 
-        <nav className="flex-1 py-6 px-4 space-y-2">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = location === item.href || (item.href !== "/" && location.startsWith(item.href));
-            
+        {/* Nav */}
+        <nav className="flex-1 py-4 flex flex-col gap-1 px-2">
+          {NAV_ITEMS.map((item) => {
+            const isActive =
+              location === item.href ||
+              (item.href !== "/" && location.startsWith(item.href));
+
             return (
-              <Link key={item.href} href={item.href} className="block">
-                <div className={cn(
-                  "flex items-center gap-3 px-4 py-3 rounded-md transition-all duration-200 font-medium group cursor-pointer",
-                  isActive 
-                    ? "bg-primary/10 text-primary border border-primary/20 shadow-[0_0_15px_rgba(59,130,246,0.1)]" 
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground border border-transparent"
-                )}>
-                  <Icon size={18} className={cn(
-                    "transition-transform duration-200", 
-                    isActive ? "scale-110" : "group-hover:scale-110"
-                  )} />
-                  {item.label}
+              <Link key={item.href} href={item.href}>
+                <div
+                  className={cn(
+                    "flex items-center gap-3 px-3 py-2.5 rounded-sm transition-colors duration-150 relative cursor-pointer select-none",
+                    isActive
+                      ? "text-[var(--color-text-primary)] bg-[var(--color-app-surface-hover)]"
+                      : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-app-surface-hover)]/50"
+                  )}
+                >
+                  {isActive && (
+                    <motion.div
+                      layoutId="sidebar-active-indicator"
+                      className="absolute left-0 top-1/2 -translate-y-1/2 rounded-r"
+                      style={{
+                        width: 2,
+                        height: 24,
+                        background: "var(--color-accent-primary)",
+                      }}
+                    />
+                  )}
+                  <item.icon
+                    className="w-5 h-5 shrink-0"
+                    style={{
+                      color: isActive ? "var(--color-accent-primary)" : "inherit",
+                    }}
+                  />
+                  <span className="hidden lg:block text-sm font-medium">
+                    {item.label}
+                  </span>
+                  {item.badge && (
+                    <span
+                      className="hidden lg:flex ml-auto text-[10px] font-mono px-1.5 py-0.5 rounded-sm"
+                      style={{
+                        background:
+                          "color-mix(in srgb, var(--color-accent-primary) 15%, transparent)",
+                        color: "var(--color-accent-primary)",
+                        border:
+                          "1px solid color-mix(in srgb, var(--color-accent-primary) 30%, transparent)",
+                      }}
+                    >
+                      {item.badge}
+                    </span>
+                  )}
                 </div>
               </Link>
             );
           })}
         </nav>
 
-        <div className="p-4 border-t border-border mt-auto">
-          <div className="terminal-panel p-3">
-            <div className="flex items-center gap-2 text-xs font-mono mb-2">
-              <div className={cn("w-2 h-2 rounded-full animate-pulse", isError ? "bg-destructive" : "bg-success")} />
-              <span className="text-muted-foreground">SYSTEM STATUS</span>
+        {/* Bottom panel */}
+        <div
+          className="flex flex-col gap-1 p-2"
+          style={{ borderTop: "1px solid var(--color-app-border)" }}
+        >
+          {/* Live status — desktop only */}
+          <div className="hidden lg:block px-3 py-2 mb-1">
+            <div className="flex items-center gap-2 mb-2">
+              <span
+                className={cn(
+                  "inline-flex w-1.5 h-1.5 rounded-full",
+                  isError
+                    ? "bg-[var(--color-accent-danger)]"
+                    : "bg-[var(--color-accent-success)] animate-pulse"
+                )}
+              />
+              <span className="mono-micro" style={{ color: "var(--color-text-tertiary)" }}>
+                System Status
+              </span>
             </div>
             {health ? (
-              <div className="space-y-1 text-xs font-mono">
+              <div
+                className="space-y-1 font-mono text-[11px]"
+                style={{ color: "var(--color-text-secondary)" }}
+              >
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Markets:</span>
-                  <span className="text-foreground">{health.markets}</span>
+                  <span style={{ color: "var(--color-text-tertiary)" }}>Markets</span>
+                  <span>{(health as any).markets}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Signals:</span>
-                  <span className="text-foreground">{health.signals}</span>
+                  <span style={{ color: "var(--color-text-tertiary)" }}>Signals</span>
+                  <span>{(health as any).signals}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Data Points:</span>
-                  <span className="text-foreground">{health.snapshots}</span>
+                  <span style={{ color: "var(--color-text-tertiary)" }}>Snapshots</span>
+                  <span>{(health as any).snapshots?.toLocaleString()}</span>
                 </div>
               </div>
             ) : (
-              <div className="text-xs text-muted-foreground animate-pulse">Connecting to core...</div>
+              <div
+                className="text-[11px] font-mono animate-pulse"
+                style={{ color: "var(--color-text-tertiary)" }}
+              >
+                Connecting...
+              </div>
             )}
           </div>
+
+          {/* Timezone picker — desktop only */}
+          <div className="hidden lg:flex items-center gap-2 px-3 py-2">
+            <Globe
+              className="w-5 h-5 shrink-0"
+              style={{ color: "var(--color-text-tertiary)" }}
+            />
+            <select
+              value={timezone}
+              onChange={(e) => setTimezone(e.target.value)}
+              className="flex-1 text-sm font-medium bg-transparent border-0 outline-none cursor-pointer appearance-none"
+              style={{ color: "var(--color-text-tertiary)" }}
+            >
+              {TIMEZONES.map((tz) => (
+                <option
+                  key={tz.value}
+                  value={tz.value}
+                  style={{
+                    background: "var(--color-app-surface)",
+                    color: "var(--color-text-primary)",
+                  }}
+                >
+                  {tz.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Theme toggle */}
+          <button
+            onClick={() => setIsDark(!isDark)}
+            className="flex items-center justify-center lg:justify-start px-3 py-2.5 rounded-sm transition-colors cursor-pointer hover:bg-[var(--color-app-surface-hover)]"
+            style={{ color: "var(--color-text-tertiary)" }}
+          >
+            {isDark ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+            <span className="hidden lg:block ml-3 text-sm font-medium">
+              {isDark ? "Light Mode" : "Dark Mode"}
+            </span>
+          </button>
+
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="flex items-center justify-center lg:justify-start px-3 py-2.5 rounded-sm transition-colors cursor-pointer hover:bg-[var(--color-app-surface-hover)]"
+            style={{ color: "var(--color-text-tertiary)" }}
+          >
+            <Settings className="w-5 h-5" />
+            <span className="hidden lg:block ml-3 text-sm font-medium">Settings</span>
+          </button>
+
+          <Sheet open={settingsOpen} onOpenChange={setSettingsOpen}>
+            <SheetContent
+              side="left"
+              className="w-80"
+              style={{
+                background: "var(--color-app-surface)",
+                borderRight: "1px solid var(--color-app-border)",
+                color: "var(--color-text-primary)",
+              }}
+            >
+              <SheetHeader className="mb-6">
+                <SheetTitle style={{ color: "var(--color-text-primary)" }}>
+                  Settings
+                </SheetTitle>
+              </SheetHeader>
+
+              {/* ── Alerts section ───────────────────────────── */}
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <Bell className="w-4 h-4" style={{ color: "var(--color-accent-primary)" }} />
+                  <span className="text-sm font-semibold tracking-wide uppercase"
+                    style={{ color: "var(--color-text-secondary)", letterSpacing: "0.08em" }}>
+                    Alerts
+                  </span>
+                </div>
+
+                <p className="text-xs mb-4" style={{ color: "var(--color-text-tertiary)" }}>
+                  Choose which execution events trigger a toast notification.
+                </p>
+
+                <div className="space-y-5">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <Label htmlFor="alert-failed" className="text-sm font-medium cursor-pointer"
+                        style={{ color: "var(--color-text-primary)" }}>
+                        Execution failed
+                      </Label>
+                      <p className="text-xs mt-0.5" style={{ color: "var(--color-text-tertiary)" }}>
+                        Order rejected or errored on the exchange
+                      </p>
+                    </div>
+                    <Switch
+                      id="alert-failed"
+                      checked={settings.onExecFailed}
+                      onCheckedChange={(v) => set("onExecFailed", v)}
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <Label htmlFor="alert-opened" className="text-sm font-medium cursor-pointer"
+                        style={{ color: "var(--color-text-primary)" }}>
+                        Order opened
+                      </Label>
+                      <p className="text-xs mt-0.5" style={{ color: "var(--color-text-tertiary)" }}>
+                        Order successfully submitted to the CLOB
+                      </p>
+                    </div>
+                    <Switch
+                      id="alert-opened"
+                      checked={settings.onExecOpened}
+                      onCheckedChange={(v) => set("onExecOpened", v)}
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <Label htmlFor="alert-closed" className="text-sm font-medium cursor-pointer"
+                        style={{ color: "var(--color-text-primary)" }}>
+                        Order filled
+                      </Label>
+                      <p className="text-xs mt-0.5" style={{ color: "var(--color-text-tertiary)" }}>
+                        Order fully filled on the exchange
+                      </p>
+                    </div>
+                    <Switch
+                      id="alert-closed"
+                      checked={settings.onExecClosed}
+                      onCheckedChange={(v) => set("onExecClosed", v)}
+                    />
+                  </div>
+                </div>
+
+                <div
+                  className="mt-6 pt-4 text-xs font-mono"
+                  style={{
+                    borderTop: "1px solid var(--color-app-border)",
+                    color: "var(--color-text-tertiary)",
+                  }}
+                >
+                  Preferences saved to local storage.
+                </div>
+              </div>
+            </SheetContent>
+          </Sheet>
         </div>
       </aside>
 
-      {/* Main Content */}
-      <main className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
-        <header className="h-14 border-b border-border bg-background/80 backdrop-blur-md flex items-center justify-between px-6 shrink-0 z-10">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground font-mono">
-            <Clock size={14} />
-            <span>{new Date().toISOString().replace('T', ' ').substring(0, 19)} UTC</span>
-          </div>
-          <div className="flex items-center gap-4">
-            <Link href="/docs" className="flex items-center gap-1.5 text-xs font-mono text-muted-foreground hover:text-foreground transition-colors">
-              <HelpCircle size={14} />
-              <span className="hidden sm:inline">Guide</span>
-            </Link>
-            <div className="flex items-center gap-2">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-success"></span>
-              </span>
-              <span className="text-xs font-mono text-success">LIVE FEED</span>
-            </div>
-          </div>
-        </header>
-        <div className="flex-1 overflow-auto p-6 scroll-smooth">
-          <div className="max-w-7xl mx-auto space-y-6">
-            {children}
-          </div>
-        </div>
-      </main>
+      {/* ── Main content ──────────────────────────────────────────── */}
+      <div className="flex-1 flex flex-col h-full min-w-0 relative">
+        {/* Subtle top gradient */}
+        <div
+          className="absolute top-0 left-0 right-0 h-24 pointer-events-none z-0"
+          style={{
+            background:
+              "linear-gradient(to bottom, color-mix(in srgb, var(--color-app-surface) 20%, transparent), transparent)",
+          }}
+        />
+
+        <main className="flex-1 overflow-auto p-6 lg:p-10 relative z-10">
+          <div className="max-w-7xl mx-auto space-y-6">{children}</div>
+        </main>
+      </div>
     </div>
   );
 }

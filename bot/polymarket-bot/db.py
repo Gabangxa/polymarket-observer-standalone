@@ -8,18 +8,47 @@
 #   snapshots  — one row per market per collection run
 #   signals    — one row per signal emitted by any strategy engine
 
+import atexit
 import json
 import logging
 import os
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
+from config import MAX_WATCHLIST_SIZE, SNAPSHOT_RETENTION_DAYS
 
 logger = logging.getLogger(__name__)
 
-# ── Connection ────────────────────────────────────────────────────────────────
+# ── Connection pool ───────────────────────────────────────────────────────────
+# ThreadedConnectionPool is required because two threads share the DB:
+#   - main thread  : pipeline (scheduler → engines → outcome_tracker)
+#   - daemon thread: Flask keep-alive server (health, signals, watchlist endpoints)
+#
+# Pool sizing: each thread holds at most 1 connection at a time (queries are
+# sequential within each thread), so 2 would suffice. 4 gives headroom for
+# brief overlap during collection + signal resolution + simultaneous HTTP hit.
+
+_POOL_MIN = 1
+_POOL_MAX = 4
+
+# Connection-level timeouts. Without these a query can block forever on a
+# half-open TCP socket (network blip, DB failover, idle NAT reap) — the failure
+# mode that hung the executor thread silently for 24h on 2026-05-18 (is_alive()
+# stays True, nothing is raised, logs go dark). With them, a stuck query RAISES
+# instead, so the executor's per-cycle try/except logs it and survives.
+#   statement_timeout : server aborts any single statement past this (ms).
+#   connect_timeout   : cap on the initial TCP connect (secs).
+#   keepalives*       : detect a dead peer at the socket layer (~60s here).
+_STATEMENT_TIMEOUT_MS = int(os.environ.get("DB_STATEMENT_TIMEOUT_MS", "30000"))
+_CONNECT_TIMEOUT_SECS = int(os.environ.get("DB_CONNECT_TIMEOUT_SECS", "10"))
+
+_pool: psycopg2.pool.ThreadedConnectionPool | None = None
+_pool_lock = threading.Lock()
+
 
 def _get_url() -> str:
     url = os.environ.get("DATABASE_URL")
@@ -32,18 +61,67 @@ def _get_url() -> str:
     return url
 
 
+def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
+    """Return the shared connection pool, initialising it on first call."""
+    global _pool
+    if _pool is not None:
+        return _pool
+    with _pool_lock:
+        if _pool is not None:        # double-checked locking
+            return _pool
+        _pool = psycopg2.pool.ThreadedConnectionPool(
+            _POOL_MIN,
+            _POOL_MAX,
+            _get_url(),
+            cursor_factory=psycopg2.extras.RealDictCursor,
+            # libpq params forwarded to psycopg2.connect for every pooled conn.
+            connect_timeout=_CONNECT_TIMEOUT_SECS,
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=3,
+            options=f"-c statement_timeout={_STATEMENT_TIMEOUT_MS}",
+        )
+        logger.info(
+            f"DB connection pool ready (min={_POOL_MIN}, max={_POOL_MAX}, "
+            f"statement_timeout={_STATEMENT_TIMEOUT_MS}ms, connect_timeout={_CONNECT_TIMEOUT_SECS}s)"
+        )
+        return _pool
+
+
+def _close_pool() -> None:
+    """Drain the pool on process exit. Registered via atexit."""
+    global _pool
+    if _pool is not None:
+        try:
+            _pool.closeall()
+        except Exception:
+            pass
+        _pool = None
+
+
+atexit.register(_close_pool)
+
+
 @contextmanager
 def get_conn():
-    """Context manager yielding a psycopg2 connection. Auto-commits on exit."""
-    conn = psycopg2.connect(_get_url(), cursor_factory=psycopg2.extras.RealDictCursor)
+    """Borrow a connection from the pool. Auto-commits on clean exit,
+    rolls back on error. Discards the connection if rollback itself fails
+    (indicates a dead connection that should not be returned to the pool)."""
+    pool    = _get_pool()
+    conn    = pool.getconn()
+    discard = False
     try:
         yield conn
         conn.commit()
     except Exception:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:
+            discard = True   # connection is dead; don't recycle it
         raise
     finally:
-        conn.close()
+        pool.putconn(conn, close=discard)
 
 
 # ── Schema ────────────────────────────────────────────────────────────────────
@@ -82,26 +160,30 @@ CREATE TABLE IF NOT EXISTS snapshots (
     price_history   JSONB,
     top_holders     JSONB,
     recent_trades   JSONB,
-    errors          TEXT[]
+    errors          TEXT[],
+    yes_ask         NUMERIC,
+    no_ask          NUMERIC
 );
 
 CREATE INDEX IF NOT EXISTS snapshots_market_collected
     ON snapshots (market_id, collected_at DESC);
 
 CREATE TABLE IF NOT EXISTS signals (
-    id              BIGSERIAL PRIMARY KEY,
-    strategy        TEXT NOT NULL,
-    market_id       TEXT,
-    event_slug      TEXT,
-    signal_score    NUMERIC,
-    metadata        JSONB,
-    emitted_at      TIMESTAMPTZ DEFAULT NOW(),
+    id                   BIGSERIAL PRIMARY KEY,
+    strategy             TEXT NOT NULL,
+    market_id            TEXT,
+    event_slug           TEXT,
+    signal_score         NUMERIC,
+    metadata             JSONB,
+    emitted_at           TIMESTAMPTZ DEFAULT NOW(),
     -- Phase 4: paper trade fields (null until tracked)
-    entry_price     NUMERIC,
-    exit_price      NUMERIC,
-    pnl             NUMERIC,
-    resolved        BOOLEAN DEFAULT FALSE,
-    outcome         BOOLEAN
+    entry_price          NUMERIC,
+    exit_price           NUMERIC,
+    pnl                  NUMERIC,
+    resolved             BOOLEAN DEFAULT FALSE,
+    outcome              BOOLEAN,
+    executed             BOOLEAN DEFAULT FALSE,
+    executed_skip_reason TEXT
 );
 
 CREATE INDEX IF NOT EXISTS signals_strategy_emitted
@@ -113,15 +195,179 @@ CREATE INDEX IF NOT EXISTS signals_market_emitted
 -- Migrations: add columns to existing tables
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS outcome BOOLEAN;
 ALTER TABLE markets ADD COLUMN IF NOT EXISTS category TEXT;
+ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS yes_ask NUMERIC;
+ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS no_ask NUMERIC;
+
+-- Execution tracking
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS executed BOOLEAN DEFAULT FALSE;
+
+CREATE INDEX IF NOT EXISTS signals_executable
+    ON signals (executed, signal_score, emitted_at)
+    WHERE executed = FALSE;
+
+CREATE TABLE IF NOT EXISTS orders (
+    id                BIGSERIAL PRIMARY KEY,
+    clord_id          TEXT UNIQUE NOT NULL,
+    signal_id         BIGINT REFERENCES signals(id),
+    market_id         TEXT NOT NULL,
+    token_id          TEXT NOT NULL,
+    side              TEXT NOT NULL,
+    price             NUMERIC NOT NULL,
+    size_usdc         NUMERIC NOT NULL,
+    strategy          TEXT NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'PENDING_SUBMISSION',
+    exchange_order_id TEXT,
+    working_qty       NUMERIC DEFAULT 0,
+    filled_qty        NUMERIC DEFAULT 0,
+    fill_price        NUMERIC,
+    submitted_at      TIMESTAMPTZ,
+    filled_at         TIMESTAMPTZ,
+    canceled_at       TIMESTAMPTZ,
+    error_msg         TEXT,
+    created_at        TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS orders_status
+    ON orders (status, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS orders_signal
+    ON orders (signal_id);
+
+-- GTD and reprice tracking (added with GTD/reprice implementation)
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS expiration_ts  TIMESTAMPTZ;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS reprice_of     BIGINT REFERENCES orders(id);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS repriced       BOOLEAN DEFAULT FALSE;
+
+CREATE INDEX IF NOT EXISTS orders_reprice_candidates
+    ON orders (status, repriced, expiration_ts)
+    WHERE status = 'CANCELED' AND repriced = FALSE;
+
+CREATE TABLE IF NOT EXISTS positions (
+    id                BIGSERIAL PRIMARY KEY,
+    market_id         TEXT NOT NULL,
+    token_id          TEXT NOT NULL,
+    side              TEXT NOT NULL,
+    total_bought      NUMERIC DEFAULT 0,
+    total_sold        NUMERIC DEFAULT 0,
+    working_buy       NUMERIC DEFAULT 0,
+    working_sell      NUMERIC DEFAULT 0,
+    avg_cost          NUMERIC,
+    pnl_realized      NUMERIC DEFAULT 0,
+    pnl_open          NUMERIC DEFAULT 0,
+    -- peak_price: running high-water mark since entry; read by exit_manager's
+    -- trailing-stop logic. Persisted so the peak survives container restarts
+    -- (previously in-memory only — restart reset peak to avg_cost and disarmed
+    -- any trailing stops that should have already been triggered).
+    peak_price        NUMERIC,
+    peak_observed_at  TIMESTAMPTZ,
+    last_updated      TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (market_id, token_id, side)
+);
+
+CREATE TABLE IF NOT EXISTS bot_config (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
 """
 
 
 def init_schema() -> None:
     """Create tables if they don't exist. Safe to call on every startup."""
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(SCHEMA_SQL)
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(SCHEMA_SQL)
+    except Exception as e:
+        # A failed SCHEMA_SQL (e.g. a non-IMMUTABLE functional index on an existing
+        # deployment) must not prevent migrations from running. Migrations run in
+        # separate transactions and add columns / indexes that the SCHEMA_SQL
+        # CREATE TABLE IF NOT EXISTS cannot retroactively apply to existing tables.
+        logger.warning(f"SCHEMA_SQL partial failure (migrations will still run): {e}")
+    # Always run migrations — even if SCHEMA_SQL failed above. Each migration is
+    # independent, idempotent, and catches its own errors.
+    _run_migrations()
     logger.info("Database schema ready")
+
+
+_MIGRATIONS = [
+    "ALTER TABLE signals ADD COLUMN IF NOT EXISTS executed BOOLEAN DEFAULT FALSE",
+    "ALTER TABLE signals ADD COLUMN IF NOT EXISTS outcome BOOLEAN",
+    "ALTER TABLE signals ADD COLUMN IF NOT EXISTS executed_skip_reason TEXT",
+    "ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS yes_ask NUMERIC",
+    "ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS no_ask NUMERIC",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS expiration_ts TIMESTAMPTZ",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS reprice_of BIGINT REFERENCES orders(id)",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS repriced BOOLEAN DEFAULT FALSE",
+    # Dedup accumulated duplicate signals before recreating the fixed unique index.
+    # signals_dedup_hourly never successfully created (date_trunc on timestamptz is
+    # STABLE not IMMUTABLE), so ON CONFLICT DO NOTHING was a no-op and duplicates
+    # accumulated. Keep the lowest id per (strategy, market/event, hour) and skip
+    # signals with attached orders to avoid FK violation.
+    """
+    DELETE FROM signals s1
+    USING signals s2
+    WHERE s1.id > s2.id
+      AND s1.strategy = s2.strategy
+      AND COALESCE(s1.market_id, s1.event_slug) = COALESCE(s2.market_id, s2.event_slug)
+      AND date_trunc('hour', s1.emitted_at AT TIME ZONE 'UTC')
+        = date_trunc('hour', s2.emitted_at AT TIME ZONE 'UTC')
+      AND NOT EXISTS (SELECT 1 FROM orders WHERE orders.signal_id = s1.id)
+    """,
+    "DROP INDEX IF EXISTS signals_dedup_hourly",
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS signals_dedup_hourly
+        ON signals (
+            strategy,
+            COALESCE(market_id, event_slug),
+            date_trunc('hour', emitted_at AT TIME ZONE 'UTC')
+        )
+    """,
+    # Ensure positions table has the UNIQUE constraint required for upsert_position's
+    # ON CONFLICT (market_id, token_id, side). The table may have been created before
+    # the UNIQUE clause was added to SCHEMA_SQL, and subsequent SCHEMA_SQL runs all
+    # rolled back (IMMUTABLE index error) so the constraint was never retroactively added.
+    # _run_migrations catches the error if the constraint already exists — safe to re-run.
+    "ALTER TABLE positions ADD CONSTRAINT positions_unique_market_token_side UNIQUE (market_id, token_id, side)",
+    # Idempotent fallback: create the unique index directly if the ALTER TABLE above
+    # failed (constraint name conflict, duplicate rows, etc.). A unique index satisfies
+    # ON CONFLICT just as well as a named constraint. IF NOT EXISTS makes this safe to
+    # run on every startup.
+    "CREATE UNIQUE INDEX IF NOT EXISTS positions_unique_mts ON positions (market_id, token_id, side)",
+    # Recovery: orders that were successfully placed on the CLOB but then had their
+    # status overwritten to REJECTED because upsert_position raised InvalidColumnReference
+    # (missing positions UNIQUE constraint). They have a real exchange_order_id set and
+    # are genuinely open on the exchange. Restore to OPEN so poll_order_status can
+    # track their fills and the exit manager can manage them.
+    """
+    UPDATE orders
+    SET status = 'OPEN'
+    WHERE status = 'REJECTED'
+      AND exchange_order_id IS NOT NULL
+      AND exchange_order_id != ''
+      AND error_msg ILIKE '%%InvalidColumnReference%%'
+    """,
+    # Soft-delete column for dead markets: keeps the row so the dashboard's
+    # LEFT JOIN on orders → markets can still resolve question text after the
+    # market's orderbook is gone. prune_dead_market() sets this; get_watchlist()
+    # filters it out; prune_watchlist() skips already-pruned rows.
+    "ALTER TABLE markets ADD COLUMN IF NOT EXISTS pruned_at TIMESTAMPTZ",
+    # peak_price persistence so exit_manager's trailing stops survive restarts.
+    # NULL on existing rows means "no peak observed yet" — _seed_index falls
+    # back to avg_cost (conservative; no profit yet ⇒ no trailing stop arms).
+    "ALTER TABLE positions ADD COLUMN IF NOT EXISTS peak_price NUMERIC",
+    "ALTER TABLE positions ADD COLUMN IF NOT EXISTS peak_observed_at TIMESTAMPTZ",
+]
+
+
+def _run_migrations() -> None:
+    for stmt in _MIGRATIONS:
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(stmt)
+        except Exception as e:
+            logger.warning(f"Migration skipped ({stmt[:60]}...): {e}")
 
 
 # ── markets table ─────────────────────────────────────────────────────────────
@@ -159,6 +405,7 @@ def upsert_markets(watchlist: list[dict]) -> int:
             hours_to_close  = EXCLUDED.hours_to_close,
             fees_enabled    = EXCLUDED.fees_enabled,
             score           = EXCLUDED.score,
+            pruned_at       = NULL,
             updated_at      = NOW()
     """
 
@@ -169,14 +416,62 @@ def upsert_markets(watchlist: list[dict]) -> int:
 
 
 def get_watchlist() -> list[dict]:
-    """Return all markets currently in the watchlist, ordered by score."""
+    """Return active watchlist markets ordered by score, capped at MAX_WATCHLIST_SIZE."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT * FROM markets
+                WHERE pruned_at IS NULL
                 ORDER BY score DESC NULLS LAST
-            """)
+                LIMIT %s
+            """, (MAX_WATCHLIST_SIZE,))
             return [dict(r) for r in cur.fetchall()]
+
+
+def prune_watchlist(keep_ids: list[str]) -> int:
+    """
+    Delete markets (and their snapshots and signals) whose market_id is not in keep_ids.
+    Called after each scanner run to enforce the watchlist cap.
+
+    Safety: returns 0 immediately if keep_ids is empty — never wipes the
+    entire DB due to an upstream API failure returning an empty list.
+
+    Resolution preservation: any market referenced by an unresolved
+    neg-risk signal is merged into keep_ids so its snapshots survive
+    watchlist rotation. Without this, outcome_tracker loses the data
+    required to resolve cross-watchlist neg-risk events.
+
+    Returns the number of markets removed.
+    """
+    if not keep_ids:
+        return 0
+    protected = set(keep_ids) | set(get_neg_risk_referenced_markets())
+    keep_list = list(protected)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM signals WHERE market_id IS NOT NULL AND NOT (market_id = ANY(%s))",
+                (keep_list,),
+            )
+            signal_count = cur.rowcount
+            cur.execute(
+                "DELETE FROM snapshots WHERE NOT (market_id = ANY(%s))",
+                (keep_list,),
+            )
+            snap_count = cur.rowcount
+            cur.execute(
+                "DELETE FROM markets WHERE pruned_at IS NULL AND NOT (market_id = ANY(%s))",
+                (keep_list,),
+            )
+            market_count = cur.rowcount
+    if market_count:
+        protected_extras = len(protected) - len(keep_ids)
+        logger.info(
+            f"Watchlist pruned: removed {market_count} market(s), "
+            f"{snap_count} snapshot(s), {signal_count} signal(s). "
+            f"Preserved {protected_extras} market(s) for unresolved neg-risk legs."
+        )
+    return market_count
 
 
 # ── snapshots table ───────────────────────────────────────────────────────────
@@ -187,11 +482,13 @@ def insert_snapshot(snapshot: dict) -> int:
         INSERT INTO snapshots (
             market_id, collected_at,
             yes_price, no_price, spread, midpoint, fee_rate_bps,
-            open_interest, price_history, top_holders, recent_trades, errors
+            open_interest, price_history, top_holders, recent_trades, errors,
+            yes_ask, no_ask
         ) VALUES (
             %(market_id)s, %(collected_at)s,
             %(yes_price)s, %(no_price)s, %(spread)s, %(midpoint)s, %(fee_rate_bps)s,
-            %(open_interest)s, %(price_history)s, %(top_holders)s, %(recent_trades)s, %(errors)s
+            %(open_interest)s, %(price_history)s, %(top_holders)s, %(recent_trades)s, %(errors)s,
+            %(yes_ask)s, %(no_ask)s
         )
         RETURNING id
     """
@@ -233,7 +530,15 @@ def insert_snapshot(snapshot: dict) -> int:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, row)
-            return cur.fetchone()["id"]
+            row_id = cur.fetchone()["id"]
+
+    import nats_bus
+    nats_bus.publish(
+        f"pm.snapshots.{snapshot['market_id']}",
+        {k: v for k, v in snapshot.items()
+         if k not in ("price_history", "top_holders", "recent_trades")},
+    )
+    return row_id
 
 
 def get_latest_snapshots(limit: int = 100) -> list[dict]:
@@ -287,6 +592,24 @@ def get_snapshots_for_market(market_id: str, limit: int = 336) -> list[dict]:
             return [dict(r) for r in cur.fetchall()]
 
 
+def prune_old_snapshots() -> int:
+    """
+    Delete snapshots older than SNAPSHOT_RETENTION_DAYS.
+    Called once per UTC day from the main pipeline.
+    Returns the number of rows deleted.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM snapshots WHERE collected_at < NOW() - (%s * INTERVAL '1 day')",
+                (SNAPSHOT_RETENTION_DAYS,),
+            )
+            n = cur.rowcount
+    if n:
+        logger.info(f"Snapshot prune: removed {n} row(s) older than {SNAPSHOT_RETENTION_DAYS} days")
+    return n
+
+
 def get_neg_risk_snapshots_by_event() -> dict[str, list[dict]]:
     """
     Return latest snapshot per market grouped by event_slug,
@@ -298,10 +621,14 @@ def get_neg_risk_snapshots_by_event() -> dict[str, list[dict]]:
                 SELECT DISTINCT ON (s.market_id)
                     s.market_id,
                     s.yes_price,
+                    s.yes_ask,
+                    s.no_price,
+                    s.no_ask,
                     s.collected_at,
                     m.question,
                     m.event_slug,
-                    m.neg_risk
+                    m.neg_risk,
+                    m.token_ids
                 FROM snapshots s
                 JOIN markets m ON m.market_id = s.market_id
                 WHERE m.neg_risk = TRUE
@@ -318,35 +645,16 @@ def get_neg_risk_snapshots_by_event() -> dict[str, list[dict]]:
 
 def insert_signal(signal: dict) -> int:
     """
-    Insert one signal. Deduplicates within the same hour by
-    (strategy, market_id/event_slug). Returns new row id or -1 if duplicate.
+    Insert one signal. Returns the new row id, or -1 if a duplicate exists
+    for (strategy, market_id/event_slug) within the current clock-hour.
+
+    Deduplication is enforced by the signals_dedup_hourly unique index, making
+    this operation atomic — no TOCTOU race between a separate check and insert.
     """
     market_id  = signal.get("market_id")
     event_slug = signal.get("event_slug")
     strategy   = signal["strategy"]
 
-    # Deduplicate: skip if same signal already emitted in the last hour
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT id FROM signals
-                WHERE strategy = %s
-                  AND (market_id = %s OR event_slug = %s)
-                  AND emitted_at > NOW() - INTERVAL '1 hour'
-                LIMIT 1
-            """, (strategy, market_id, event_slug))
-            if cur.fetchone():
-                return -1   # duplicate within the hour
-
-    sql = """
-        INSERT INTO signals (
-            strategy, market_id, event_slug, signal_score, metadata, emitted_at
-        ) VALUES (
-            %(strategy)s, %(market_id)s, %(event_slug)s,
-            %(signal_score)s, %(metadata)s, NOW()
-        )
-        RETURNING id
-    """
     row = {
         "strategy":     strategy,
         "market_id":    market_id,
@@ -354,10 +662,79 @@ def insert_signal(signal: dict) -> int:
         "signal_score": signal.get("signal_score"),
         "metadata":     json.dumps(signal),
     }
+
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, row)
-            return cur.fetchone()["id"]
+            cur.execute("""
+                INSERT INTO signals (
+                    strategy, market_id, event_slug, signal_score, metadata, emitted_at
+                )
+                SELECT %(strategy)s, %(market_id)s, %(event_slug)s,
+                       %(signal_score)s, %(metadata)s, NOW()
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM signals
+                    WHERE strategy = %(strategy)s
+                      AND COALESCE(market_id, event_slug)
+                            IS NOT DISTINCT FROM
+                          COALESCE(%(market_id)s::text, %(event_slug)s::text)
+                      AND emitted_at > NOW() - INTERVAL '1 hour'
+                )
+                RETURNING id
+            """, row)
+            result = cur.fetchone()
+
+    if result is None:
+        return -1   # duplicate within the clock-hour
+
+    row_id = result["id"]
+
+    from config import SIGNAL_WEBHOOK_URL
+    if SIGNAL_WEBHOOK_URL:
+        try:
+            from agents.webhook_dispatcher import fire_signal
+            fire_signal(strategy, market_id or "", dict(signal))
+        except Exception as e:
+            logger.warning(f"Webhook fire failed: {e}")
+
+    import nats_bus
+    nats_bus.publish(
+        f"pm.signals.{strategy}.{market_id or 'unknown'}",
+        dict(signal),
+    )
+
+    return row_id
+
+
+def get_token_ids_for_markets(market_ids: list[str]) -> dict[str, list[str]]:
+    """Return {market_id: token_ids} for a list of market IDs. Used by neg_risk executor."""
+    if not market_ids:
+        return {}
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT market_id, token_ids FROM markets WHERE market_id = ANY(%s)",
+                (market_ids,),
+            )
+            return {r["market_id"]: (r["token_ids"] or []) for r in cur.fetchall()}
+
+
+def get_market_meta(market_id: str) -> dict | None:
+    """Return {question, end_date} for one market, or None if unknown.
+
+    Used by the pre-trade resolution-sanity gate: the executable-signal query
+    only pulls token_ids/outcomes/neg_risk from markets, so the gate needs an
+    authoritative end_date and title straight from the markets table.
+    """
+    if not market_id:
+        return None
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT question, end_date FROM markets WHERE market_id = %s",
+                (market_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
 
 
 def get_recent_signals(strategy: str = None, hours: int = 24, limit: int = 100) -> list[dict]:
@@ -379,7 +756,7 @@ def get_recent_signals(strategy: str = None, hours: int = 24, limit: int = 100) 
                     SELECT s.*, m.question
                     FROM signals s
                     LEFT JOIN markets m ON m.market_id = s.market_id
-                    WHERE s.emitted_at > NOW() - INTERVAL '%s hours'
+                    WHERE s.emitted_at > NOW() - (%s * INTERVAL '1 hour')
                     ORDER BY s.emitted_at DESC
                     LIMIT %s
                 """, (hours, limit))
@@ -453,39 +830,559 @@ def update_signal_outcome(signal_id: int, exit_price: float, pnl: float, outcome
             """, (exit_price, pnl, outcome, signal_id))
 
 
-def get_snapshot_pairs() -> list[dict]:
+def archive_signal(signal_id: int) -> None:
     """
-    Return (latest, previous) snapshot pair for each market.
-    Used by odds_shift_engine to detect inter-snapshot price movements.
-    Only returns pairs where both snapshots have a non-null yes_price.
+    Mark a signal as resolved with no outcome (NULL).
+    Used for signals that aged past their grace window and cannot be resolved —
+    e.g., neg-risk events whose outcome markets were pruned from the watchlist
+    before live API resolution could complete.
+
+    Distinguishes "unresolvable" from WIN/LOSS in calibration:
+    Brier / log-loss queries should filter on `outcome IS NOT NULL`.
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                WITH ranked AS (
-                    SELECT market_id, yes_price, collected_at, spread,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY market_id ORDER BY collected_at DESC
-                           ) AS rn
-                    FROM snapshots
-                )
-                SELECT
-                    latest.market_id,
-                    latest.yes_price   AS latest_price,
-                    latest.collected_at AS latest_at,
-                    latest.spread      AS latest_spread,
-                    prev.yes_price     AS prev_price,
-                    prev.collected_at  AS prev_at,
-                    m.question, m.tags, m.event_slug, m.neg_risk, m.category
-                FROM ranked latest
-                JOIN ranked prev
-                    ON latest.market_id = prev.market_id AND prev.rn = 2
-                JOIN markets m ON m.market_id = latest.market_id
-                WHERE latest.rn = 1
-                  AND latest.yes_price IS NOT NULL
-                  AND prev.yes_price IS NOT NULL
+                UPDATE signals
+                SET resolved   = TRUE,
+                    outcome    = NULL,
+                    exit_price = NULL,
+                    pnl        = NULL
+                WHERE id = %s
+            """, (signal_id,))
+
+
+def get_neg_risk_referenced_markets() -> list[str]:
+    """
+    Collect every market_id referenced inside metadata->outcomes[]->market_id of
+    unresolved neg_risk_overround signals.
+
+    Used by prune_watchlist to preserve snapshots for legs of signals that still
+    need resolution, even if the leg's market has rotated off the active watchlist.
+    Without this protection, watchlist rotation destroys the snapshot history
+    required to resolve neg-risk signals — producing permanent backlog.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT (outcome->>'market_id') AS market_id
+                FROM signals,
+                     jsonb_array_elements(metadata->'outcomes') AS outcome
+                WHERE strategy = 'neg_risk_overround'
+                  AND resolved = FALSE
+                  AND outcome->>'market_id' IS NOT NULL
+            """)
+            return [r["market_id"] for r in cur.fetchall()]
+
+
+# ── orders table ─────────────────────────────────────────────────────────────
+
+def insert_order(order: dict) -> int:
+    """
+    Insert a new order row. Returns the new row id.
+    Raises IntegrityError if clord_id already exists (duplicate guard).
+    """
+    sql = """
+        INSERT INTO orders (
+            clord_id, signal_id, market_id, token_id, side,
+            price, size_usdc, strategy, status,
+            expiration_ts, reprice_of
+        ) VALUES (
+            %(clord_id)s, %(signal_id)s, %(market_id)s, %(token_id)s, %(side)s,
+            %(price)s, %(size_usdc)s, %(strategy)s, 'PENDING_SUBMISSION',
+            %(expiration_ts)s, %(reprice_of)s
+        )
+        RETURNING id
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, order)
+            return cur.fetchone()["id"]
+
+
+def update_order_status(
+    clord_id: str,
+    status: str,
+    *,
+    exchange_order_id: str = None,
+    working_qty: float = None,
+    filled_qty: float = None,
+    fill_price: float = None,
+    error_msg: str = None,
+    submitted_at=None,
+    filled_at=None,
+    canceled_at=None,
+) -> None:
+    """Update order state. Only non-None kwargs are written."""
+    fields = ["status = %(status)s"]
+    params: dict = {"clord_id": clord_id, "status": status}
+
+    if exchange_order_id is not None:
+        fields.append("exchange_order_id = %(exchange_order_id)s")
+        params["exchange_order_id"] = exchange_order_id
+    if working_qty is not None:
+        fields.append("working_qty = %(working_qty)s")
+        params["working_qty"] = working_qty
+    if filled_qty is not None:
+        fields.append("filled_qty = %(filled_qty)s")
+        params["filled_qty"] = filled_qty
+    if fill_price is not None:
+        fields.append("fill_price = %(fill_price)s")
+        params["fill_price"] = fill_price
+    if error_msg is not None:
+        fields.append("error_msg = %(error_msg)s")
+        params["error_msg"] = error_msg
+    if submitted_at is not None:
+        fields.append("submitted_at = %(submitted_at)s")
+        params["submitted_at"] = submitted_at
+    if filled_at is not None:
+        fields.append("filled_at = %(filled_at)s")
+        params["filled_at"] = filled_at
+    if canceled_at is not None:
+        fields.append("canceled_at = %(canceled_at)s")
+        params["canceled_at"] = canceled_at
+
+    sql = f"UPDATE orders SET {', '.join(fields)} WHERE clord_id = %(clord_id)s"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+
+
+def get_open_orders() -> list[dict]:
+    """Return all orders in a non-terminal state (for fill polling)."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT * FROM orders
+                WHERE status IN ('PENDING_SUBMISSION', 'SENT', 'OPEN', 'PARTIALLY_FILLED')
+                ORDER BY created_at ASC
             """)
             return [dict(r) for r in cur.fetchall()]
+
+
+def order_exists_for_signal(signal_id: int) -> bool:
+    """Return True if any order (any status) was already created for this signal."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM orders WHERE signal_id = %s LIMIT 1",
+                (signal_id,),
+            )
+            return cur.fetchone() is not None
+
+
+def order_exists_for_token(token_id: str) -> bool:
+    """
+    Return True if any live or filled order already exists for this token.
+    Used by the pre-trade gate to block a second order on the same outcome token
+    even when that second order is triggered by a different signal.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT 1 FROM orders
+                WHERE token_id = %s
+                  AND status IN (
+                      'PENDING_SUBMISSION', 'SENT', 'OPEN',
+                      'PARTIALLY_FILLED', 'FILLED'
+                  )
+                LIMIT 1
+            """, (token_id,))
+            return cur.fetchone() is not None
+
+
+def mark_signal_executed(signal_id: int) -> None:
+    """Mark a signal as handed off to the executor."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE signals SET executed = TRUE WHERE id = %s",
+                (signal_id,),
+            )
+
+
+def mark_signal_skipped(signal_id: int, reason: str) -> None:
+    """
+    Mark a signal as executed but skipped before an order was placed, with a
+    human-readable reason. Lets the dashboard surface why no order fired
+    instead of leaving the operator guessing.
+
+    Examples of skip reasons:
+      - "size_below_floor"       — computed size_usdc < _MIN_ORDER_USDC
+      - "size_zero_kelly_zero"   — Kelly fraction was 0 / negative
+      - "missing_token_id"       — engine produced a signal without resolvable token
+      - "no_yes_price"           — required price field absent from metadata
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE signals
+                SET executed = TRUE,
+                    executed_skip_reason = %s
+                WHERE id = %s
+                """,
+                (reason, signal_id),
+            )
+
+
+def prune_dead_market(market_id: str) -> None:
+    """
+    Remove a market from the watchlist after the CLOB confirmed its orderbook
+    no longer exists. Deletes the market row (so the scanner/collector skip it
+    on the next cycle) and its unexecuted signals (no point retrying them).
+    Snapshots are left intact for calibration history and are pruned by the
+    normal retention policy. Signals with attached orders are preserved for
+    audit / PnL tracking.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                DELETE FROM signals
+                WHERE market_id = %s
+                  AND executed = FALSE
+            """, (market_id,))
+            cur.execute(
+                "UPDATE markets SET pruned_at = NOW() WHERE market_id = %s",
+                (market_id,),
+            )
+    logger.info(f"Pruned dead market {market_id} (orderbook does not exist)")
+
+
+def get_executable_signals(
+    min_score: float,
+    strategies: list[str],
+    max_age_secs: int,
+    limit: int = 20,
+) -> list[dict]:
+    """
+    Return unexecuted signals that are fresh, high-score, and in an allowed strategy.
+    Ordered by signal_score DESC so the best opportunities are processed first.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT s.*, m.token_ids, m.outcomes, m.neg_risk
+                FROM signals s
+                LEFT JOIN markets m ON m.market_id = s.market_id
+                WHERE s.executed = FALSE
+                  AND s.signal_score >= %(min_score)s
+                  AND s.strategy = ANY(%(strategies)s)
+                  AND s.emitted_at > NOW() - (%(max_age_secs)s * INTERVAL '1 second')
+                  AND (m.end_date IS NULL OR m.end_date > NOW())
+                ORDER BY s.signal_score DESC
+                LIMIT %(limit)s
+            """, {
+                "min_score": min_score,
+                "strategies": strategies,
+                "max_age_secs": max_age_secs,
+                "limit": limit,
+            })
+            rows = []
+            for r in cur.fetchall():
+                row = dict(r)
+                if isinstance(row.get("metadata"), str):
+                    try:
+                        row["metadata"] = json.loads(row["metadata"])
+                    except Exception:
+                        row["metadata"] = {}
+                rows.append(row)
+            return rows
+
+
+# ── positions table ───────────────────────────────────────────────────────────
+
+def upsert_position(
+    market_id: str,
+    token_id: str,
+    side: str,
+    *,
+    delta_bought: float = 0,
+    delta_sold: float = 0,
+    delta_working_buy: float = 0,
+    delta_working_sell: float = 0,
+    avg_cost: float = None,       # fill price for this transaction (buy or sell)
+    pnl_realized_delta: float = 0,
+) -> None:
+    """
+    Create or update a position row by applying deltas. All qty changes are
+    additive so concurrent updates don't race.
+
+    avg_cost is the fill price for THIS transaction (not a target avg_cost):
+      - On a BUY fill  → used to compute the new VWAP avg_cost.
+      - On a SELL fill → used to compute realized PnL = (fill - avg_cost) × sold.
+      Both computations are done atomically in SQL; no pre-read is required.
+
+    VWAP formula (buy fills only):
+      new_avg_cost = (old_avg_cost × old_shares + fill_price × delta_bought)
+                     / (old_shares + delta_bought)
+
+    Realized PnL formula (sell fills only):
+      pnl_realized += (sell_fill_price − avg_cost) × delta_sold
+    """
+    params: dict = {
+        "market_id":         market_id,
+        "token_id":          token_id,
+        "side":              side,
+        "delta_bought":      delta_bought,
+        "delta_sold":        delta_sold,
+        "delta_working_buy": delta_working_buy,
+        "delta_working_sell":delta_working_sell,
+        "pnl_realized_delta":pnl_realized_delta,
+        "avg_cost":          avg_cost,
+    }
+    sql = """
+        INSERT INTO positions (market_id, token_id, side, total_bought, total_sold,
+            working_buy, working_sell, avg_cost, pnl_realized, last_updated)
+        VALUES (%(market_id)s, %(token_id)s, %(side)s,
+            %(delta_bought)s, %(delta_sold)s,
+            %(delta_working_buy)s, %(delta_working_sell)s,
+            %(avg_cost)s, %(pnl_realized_delta)s, NOW())
+        ON CONFLICT (market_id, token_id, side) DO UPDATE SET
+            total_bought  = positions.total_bought  + %(delta_bought)s,
+            total_sold    = positions.total_sold    + %(delta_sold)s,
+            working_buy   = positions.working_buy   + %(delta_working_buy)s,
+            working_sell  = positions.working_sell  + %(delta_working_sell)s,
+            avg_cost = CASE
+                WHEN %(delta_bought)s > 0 AND %(avg_cost)s IS NOT NULL
+                THEN (
+                    COALESCE(positions.avg_cost,    0) * COALESCE(positions.total_bought, 0)
+                    + %(avg_cost)s::numeric          * %(delta_bought)s::numeric
+                ) / NULLIF(
+                    COALESCE(positions.total_bought, 0) + %(delta_bought)s::numeric,
+                    0
+                )
+                ELSE positions.avg_cost
+            END,
+            pnl_realized  = positions.pnl_realized + CASE
+                WHEN %(delta_sold)s > 0 AND %(avg_cost)s IS NOT NULL
+                THEN (%(avg_cost)s::numeric - COALESCE(positions.avg_cost, 0))
+                     * %(delta_sold)s::numeric
+                ELSE %(pnl_realized_delta)s
+            END,
+            last_updated  = NOW()
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+
+
+def update_peak_price(market_id: str, token_id: str, side: str, peak: float) -> None:
+    """
+    Ratchet positions.peak_price upward to `peak`. Uses GREATEST so concurrent
+    snapshot events from different threads/instances converge to the maximum
+    without race. Only updates peak_observed_at when the peak actually changes.
+    No-op if the row does not exist (a position must be created via
+    upsert_position first).
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE positions
+                SET peak_price = GREATEST(COALESCE(peak_price, 0), %s::numeric),
+                    peak_observed_at = CASE
+                        WHEN %s::numeric > COALESCE(peak_price, 0) THEN NOW()
+                        ELSE peak_observed_at
+                    END
+                WHERE market_id = %s AND token_id = %s AND side = %s
+                """,
+                (peak, peak, market_id, token_id, side),
+            )
+
+
+def get_position(market_id: str, token_id: str, side: str) -> dict | None:
+    """Return a single position row or None if no position exists."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT * FROM positions
+                WHERE market_id = %s AND token_id = %s AND side = %s
+            """, (market_id, token_id, side))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def get_total_open_exposure() -> float:
+    """
+    Sum of size_usdc across all non-terminal and filled-but-held orders.
+    Used by the pre-trade gate to enforce the portfolio exposure cap.
+    The 8-day window covers the max market lifetime (168h) plus buffer.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COALESCE(SUM(size_usdc), 0) AS total
+                FROM orders
+                WHERE status IN (
+                    'PENDING_SUBMISSION', 'SENT', 'OPEN',
+                    'PARTIALLY_FILLED', 'FILLED'
+                )
+                AND created_at > NOW() - INTERVAL '8 days'
+            """)
+            return float(cur.fetchone()["total"])
+
+
+def get_expired_unfilled_orders() -> list[dict]:
+    """
+    Return CANCELED orders with no fills that were GTD-expired (not user-canceled)
+    and have not yet been repriced. Joined with markets for hours_to_close.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT o.*, m.token_ids, m.hours_to_close, m.question, m.tags
+                FROM orders o
+                LEFT JOIN markets m ON m.market_id = o.market_id
+                WHERE o.status = 'CANCELED'
+                  AND (o.filled_qty IS NULL OR o.filled_qty = 0)
+                  AND o.repriced = FALSE
+                  AND o.expiration_ts IS NOT NULL
+                  AND o.expiration_ts <= NOW()
+            """)
+            return [dict(r) for r in cur.fetchall()]
+
+
+def mark_order_repriced(order_id: int) -> None:
+    """Mark an order as repriced so it is not picked up again next cycle."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE orders SET repriced = TRUE WHERE id = %s",
+                (order_id,),
+            )
+
+
+def get_snapshot_for_reprice(market_id: str) -> dict | None:
+    """
+    Latest snapshot for a single market, including hours_to_close from markets.
+    Used by the executor's reprice evaluator.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT ON (s.market_id)
+                    s.*,
+                    m.question, m.event_slug, m.tags,
+                    m.neg_risk, m.hours_to_close
+                FROM snapshots s
+                JOIN markets m ON m.market_id = s.market_id
+                WHERE s.market_id = %s
+                ORDER BY s.market_id, s.collected_at DESC
+            """, (market_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def get_all_open_positions() -> list[dict]:
+    """Return all positions with non-zero net exposure or working qty."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT * FROM positions
+                WHERE (total_bought - total_sold) != 0
+                   OR working_buy != 0
+                   OR working_sell != 0
+                ORDER BY last_updated DESC
+            """)
+            return [dict(r) for r in cur.fetchall()]
+
+
+def get_open_positions_with_strategy(market_id: str = None) -> list[dict]:
+    """
+    Return open positions annotated with the strategy that created them.
+    Uses a LATERAL join on orders (most recent non-exit filled/open order) to
+    determine strategy. Exit orders (strategy LIKE 'exit_%') are skipped so a
+    repriced exit does not overwrite the original entry strategy.
+
+    market_id: if given, restricts to one market (used for fill-event refreshes).
+    """
+    extra_where = "AND p.market_id = %(market_id)s" if market_id else ""
+    params: dict = {"market_id": market_id}
+    sql = f"""
+        SELECT
+            p.*,
+            COALESCE(o.strategy, '') AS strategy,
+            m.end_date,
+            m.neg_risk
+        FROM positions p
+        LEFT JOIN markets m ON m.market_id = p.market_id
+        LEFT JOIN LATERAL (
+            SELECT strategy FROM orders
+            WHERE market_id = p.market_id
+              AND token_id  = p.token_id
+              AND status IN ('FILLED', 'PARTIALLY_FILLED', 'OPEN')
+              AND strategy NOT LIKE 'exit_%%'
+            ORDER BY created_at DESC
+            LIMIT 1
+        ) o ON true
+        WHERE (COALESCE(p.total_bought, 0) - COALESCE(p.total_sold, 0)) > 0
+        {extra_where}
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            return [dict(r) for r in cur.fetchall()]
+
+
+def get_latest_snapshots_for_markets(market_ids: list[str]) -> list[dict]:
+    """Return the most recent snapshot for each market in the given list.
+    Returns only the fields needed for PnL computation."""
+    if not market_ids:
+        return []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT ON (market_id)
+                    market_id, yes_price, no_price, collected_at
+                FROM snapshots
+                WHERE market_id = ANY(%s)
+                ORDER BY market_id, collected_at DESC
+            """, (market_ids,))
+            return [dict(r) for r in cur.fetchall()]
+
+
+def update_position_pnl_open(
+    market_id: str,
+    token_id: str,
+    side: str,
+    pnl_open: float,
+) -> None:
+    """Overwrite pnl_open for a single position. Called each cycle by pnl_tracker.
+    Does not touch pnl_realized — those are separate ledger entries."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE positions
+                SET pnl_open = %s, last_updated = NOW()
+                WHERE market_id = %s AND token_id = %s AND side = %s
+            """, (pnl_open, market_id, token_id, side))
+
+
+def book_realized_pnl(market_id: str, exit_price: float) -> None:
+    """
+    Called when a market fully resolves. For every open position on that market,
+    locks in the realized gain/loss and zeros out unrealized:
+
+      pnl_realized += (exit_price - avg_cost) * net_shares
+      pnl_open      = 0
+
+    exit_price is 1.0 for YES resolution, 0.0 for NO resolution, or the
+    actual fill price on an active sell order.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE positions
+                SET
+                    pnl_realized = pnl_realized
+                                   + (%s - COALESCE(avg_cost, 0))
+                                     * (COALESCE(total_bought, 0) - COALESCE(total_sold, 0)),
+                    pnl_open     = 0,
+                    last_updated = NOW()
+                WHERE market_id = %s
+                  AND (COALESCE(total_bought, 0) - COALESCE(total_sold, 0)) > 0
+            """, (exit_price, market_id))
 
 
 def get_db_stats() -> dict:
@@ -509,3 +1406,103 @@ def get_db_stats() -> dict:
         "signals":       signals,
         "last_snapshot": last_snapshot.isoformat() if last_snapshot else None,
     }
+
+
+# ── bot_config table ──────────────────────────────────────────────────────────
+
+def get_config(key: str, default: str | None = None) -> str | None:
+    """Return a config value by key, or default if not set."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT value FROM bot_config WHERE key = %s", (key,))
+            row = cur.fetchone()
+            return row["value"] if row else default
+
+
+def set_config(key: str, value: str) -> None:
+    """Upsert a config value."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO bot_config (key, value, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (key) DO UPDATE
+                    SET value = EXCLUDED.value, updated_at = NOW()
+            """, (key, value))
+
+
+# ── executor heartbeat (liveness/progress telemetry) ──────────────────────────
+# The executor writes a heartbeat every cycle. The scheduler watchdog reads it
+# to detect a HUNG executor — one that is_alive() but making no progress (the
+# 2026-05-18 silent-hang failure mode). Stored as an ISO-8601 string under the
+# `executor_heartbeat_at` key; no schema change (bot_config is a KV table).
+_HEARTBEAT_KEY = "executor_heartbeat_at"
+
+
+def touch_executor_heartbeat() -> None:
+    """Record that the executor completed a cycle. Called once per executor loop."""
+    set_config(_HEARTBEAT_KEY, datetime.now(timezone.utc).isoformat())
+
+
+def _heartbeat_age_secs(iso_str: str | None, now: datetime | None = None) -> float | None:
+    """Pure helper: seconds between `iso_str` and `now`. None if unparseable/missing.
+    Kept DB-free so the staleness logic is unit-testable without Postgres."""
+    if not iso_str:
+        return None
+    try:
+        ts = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    return (now - ts).total_seconds()
+
+
+def seconds_since_executor_heartbeat() -> float | None:
+    """Age of the last executor heartbeat in seconds, or None if never set / unreadable."""
+    return _heartbeat_age_secs(get_config(_HEARTBEAT_KEY))
+
+
+def get_bankroll() -> float:
+    """
+    Return the current bankroll USDC from bot_config, falling back to the
+    BANKROLL_USDC env var. Returns 0.0 if neither is set or both are invalid.
+    """
+    raw = get_config("bankroll_usdc")
+    if raw is not None:
+        try:
+            val = float(raw)
+            return val if val > 0 else 0.0
+        except (ValueError, TypeError):
+            pass
+    env_val = float(os.environ.get("BANKROLL_USDC", "0.0") or "0.0")
+    return env_val if env_val > 0 else 0.0
+
+
+def get_max_position_pct() -> float:
+    """Max fraction of bankroll per single position. Falls back to MAX_POSITION_PCT env/config."""
+    from config import MAX_POSITION_PCT
+    raw = get_config("max_position_pct")
+    if raw is not None:
+        try:
+            val = float(raw)
+            if 0 < val <= 1:
+                return val
+        except (ValueError, TypeError):
+            pass
+    return MAX_POSITION_PCT
+
+
+def get_max_portfolio_pct() -> float:
+    """Max fraction of bankroll deployed across all open positions. Falls back to MAX_PORTFOLIO_PCT."""
+    from config import MAX_PORTFOLIO_PCT
+    raw = get_config("max_portfolio_pct")
+    if raw is not None:
+        try:
+            val = float(raw)
+            if 0 < val <= 1:
+                return val
+        except (ValueError, TypeError):
+            pass
+    return MAX_PORTFOLIO_PCT

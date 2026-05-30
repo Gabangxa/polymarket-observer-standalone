@@ -8,4 +8,9 @@
 
 export type GetMarketSnapshotsParams = {
   limit?: number;
+  /**
+ * If provided, return one snapshot per hour over the trailing window (capped at 720h). Overrides limit-based pagination.
+
+ */
+  hours?: number;
 };

@@ -116,6 +116,12 @@ export interface Signal {
   pnl?: string | null;
   resolved?: boolean | null;
   question?: string | null;
+  /** True once the executor has handled this signal (placed an order or skipped with a reason). Prevents re-processing each cycle.
+   */
+  executed?: boolean | null;
+  /** Set when the executor skipped placing an order for this signal (e.g. size_below_floor, missing_token_id). Mutually exclusive with orders.status='REJECTED' which records CLOB-side rejections.
+   */
+  executedSkipReason?: string | null;
 }
 
 export interface SignalInput {
@@ -140,10 +146,83 @@ export interface SignalListResponse {
   count: number;
 }
 
+export interface Order {
+  id: number;
+  clordId: string;
+  signalId?: number | null;
+  marketId: string;
+  tokenId: string;
+  side: string;
+  price: string;
+  sizeUsdc: string;
+  strategy: string;
+  status: string;
+  exchangeOrderId?: string | null;
+  workingQty?: string | null;
+  filledQty?: string | null;
+  fillPrice?: string | null;
+  submittedAt?: string | null;
+  filledAt?: string | null;
+  canceledAt?: string | null;
+  errorMsg?: string | null;
+  createdAt?: string | null;
+  question?: string | null;
+}
+
+export interface OrderListResponse {
+  orders: Order[];
+  count: number;
+}
+
+export interface CancelOrderResult {
+  id: number;
+  status: string;
+}
+
+export interface CancelAllResult {
+  canceled: number;
+}
+
+export interface Position {
+  id: number;
+  marketId: string;
+  tokenId: string;
+  side: string;
+  totalBought?: string | null;
+  totalSold?: string | null;
+  workingBuy?: string | null;
+  workingSell?: string | null;
+  avgCost?: string | null;
+  pnlRealized?: string | null;
+  pnlOpen?: string | null;
+  lastUpdated?: string | null;
+  question?: string | null;
+}
+
+export interface PositionListResponse {
+  positions: Position[];
+  count: number;
+}
+
 export type SignalCountsResponseCounts = { [key: string]: number };
 
 export interface SignalCountsResponse {
   counts: SignalCountsResponseCounts;
+}
+
+export interface PortfolioSummary {
+  /** Configured bankroll (BANKROLL_USDC env var on API server) */
+  bankroll: number;
+  /** Sum of sizeUsdc for all active orders */
+  atRisk: number;
+  /** bankroll minus atRisk */
+  available: number;
+  /** atRisk / bankroll as a fraction (0–1) */
+  deployedPct: number;
+  /** Sum of pnl_realized across all positions */
+  pnlRealized: number;
+  /** Sum of pnl_open across all positions */
+  pnlOpen: number;
 }
 
 export type UpsertMarketsBody = {
@@ -156,10 +235,38 @@ export type ListSnapshotsParams = {
 
 export type GetMarketSnapshotsParams = {
   limit?: number;
+  /**
+ * If provided, return one snapshot per hour over the trailing window (capped at 720h). Overrides limit-based pagination.
+
+ */
+  hours?: number;
 };
 
 export type ListSignalsParams = {
   strategy?: string;
   hours?: number;
   limit?: number;
+  resolved?: boolean;
 };
+
+export type ListOrdersParams = {
+  status?: ListOrdersStatus;
+  limit?: number;
+  /**
+   * ISO-8601 timestamp; only orders with created_at >= since are returned
+   */
+  since?: string;
+  /**
+   * ISO-8601 timestamp; only orders with created_at < until are returned
+   */
+  until?: string;
+};
+
+export type ListOrdersStatus =
+  (typeof ListOrdersStatus)[keyof typeof ListOrdersStatus];
+
+export const ListOrdersStatus = {
+  active: "active",
+  closed: "closed",
+  all: "all",
+} as const;

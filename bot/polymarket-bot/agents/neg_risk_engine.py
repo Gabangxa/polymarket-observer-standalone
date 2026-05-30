@@ -3,7 +3,7 @@
 # Reads neg-risk snapshots grouped by event, writes signals to DB.
 
 import logging
-from config import NEG_RISK_OVERROUND_THRESHOLD, NEG_RISK_MIN_OUTCOMES
+from config import NEG_RISK_MAKER_THRESHOLD, NEG_RISK_TAKER_THRESHOLD, NEG_RISK_MIN_OUTCOMES
 import db
 from agents.ev_calculator import yes_ev
 
@@ -14,59 +14,152 @@ def _analyse_event(event_slug, snapshots):
     if len(snapshots) < NEG_RISK_MIN_OUTCOMES:
         return None
 
-    prices = []
+    # Collect priced legs. Track missing counts separately for diagnostics.
+    records = []
+    missing_ask = 0
+    missing_mid = 0
     for s in snapshots:
-        price = s.get("yes_price")
-        if price is not None and float(price) > 0:
-            prices.append((s.get("question", "?"), float(price), s.get("market_id")))
+        midpoint = s.get("yes_price")
+        ask      = s.get("yes_ask")
+        if midpoint is None or float(midpoint) <= 0:
+            missing_mid += 1
+            continue
+        if ask is None or float(ask) <= 0:
+            missing_ask += 1
+            continue
+        token_ids = s.get("token_ids") or []
+        records.append({
+            "question":     s.get("question", "?"),
+            "market_id":    s.get("market_id"),
+            "midpoint":     float(midpoint),
+            "ask":          float(ask),
+            "no_price":     float(s["no_price"]) if s.get("no_price") is not None else round(1.0 - float(midpoint), 6),
+            "no_ask":       float(s["no_ask"])   if s.get("no_ask")   is not None else None,
+            "yes_token_id": token_ids[0] if len(token_ids) > 0 else None,
+            "no_token_id":  token_ids[1] if len(token_ids) > 1 else None,
+        })
 
-    if len(prices) < NEG_RISK_MIN_OUTCOMES:
+    total_legs   = len(snapshots)
+    priced_legs  = len(records)
+    uncovered    = total_legs - priced_legs
+    all_complete = (uncovered == 0)
+
+    if priced_legs < NEG_RISK_MIN_OUTCOMES:
+        logger.info(
+            f"  Skipped {event_slug}: only {priced_legs}/{total_legs} legs priced "
+            f"(missing_ask={missing_ask}, missing_mid={missing_mid}, need ≥{NEG_RISK_MIN_OUTCOMES})"
+        )
         return None
 
-    total = sum(p for _, p, _ in prices)
-    if total <= NEG_RISK_OVERROUND_THRESHOLD:
+    sum_asks = sum(r["ask"] for r in records)
+    sum_mids = sum(r["midpoint"] for r in records)
+
+    # Taker arb: buy YES on every outcome — one uncovered leg winning = full loss.
+    # Completeness is mandatory: you cannot leave any outcome unhedged.
+    is_taker_arb = all_complete and (sum_asks < NEG_RISK_TAKER_THRESHOLD)
+
+    # Maker arb: sell YES only on the liquid legs you can trade.
+    # An uncovered leg winning is a bonus — you collected all premiums and owe $0 on it.
+    # Partial coverage is valid; only the priced legs need to show over-round.
+    is_maker_arb = sum_mids > NEG_RISK_MAKER_THRESHOLD
+
+    if not is_taker_arb and not is_maker_arb:
         return None
 
-    overround = total - 1.0
-    n = len(prices)
+    # Sanity floor for taker: sum < 0.80 → missing data, not real arb.
+    if is_taker_arb and sum_asks < 0.80:
+        logger.warning(
+            f"  Skipped {event_slug}: sum_asks={sum_asks:.4f} below sanity floor 0.80 — "
+            f"likely stale/missing orderbook data, not real arbitrage"
+        )
+        return None
 
-    # EV per outcome: fair price = 1/n (uniform). Selling NO on outcome i:
-    # q_no = 1 - (1/n), p_no = 1 - p_i. EV_no = yes_ev(q_no, p_no).
-    fair_p = 1.0 / n
+    # Sanity ceiling for partial-coverage maker: sum > 1.20 with uncovered legs
+    # suggests stale/inflated pricing rather than genuine over-round.
+    if is_maker_arb and not all_complete and sum_mids > 1.20:
+        logger.warning(
+            f"  Skipped {event_slug}: sum_mids={sum_mids:.4f} exceeds ceiling 1.20 "
+            f"with {uncovered} uncovered leg(s) — likely stale data, not real over-round"
+        )
+        return None
+
+    n = len(records)
+    # Taker arb (instant fill) takes priority when both are present
+    if is_taker_arb:
+        arb_type     = "taker"
+        total        = sum_asks
+        overround    = 1.0 - total
+        ev_side      = "YES (all outcomes, taker)"
+        threshold    = NEG_RISK_TAKER_THRESHOLD
+        trigger_note = (
+            f"Sum of YES asks = {total:.4f} < {threshold} — "
+            f"buy all {n} YES outcomes for guaranteed profit."
+        )
+    else:
+        arb_type  = "maker"
+        total     = sum_mids
+        overround = total - 1.0
+        ev_side   = "YES SELL (liquid outcomes, maker)"
+        threshold = NEG_RISK_MAKER_THRESHOLD
+        if uncovered > 0:
+            trigger_note = (
+                f"Sum of YES mids on {n}/{total_legs} priced legs = {total:.4f} > {threshold} — "
+                f"sell YES on {n} liquid outcomes. "
+                f"{uncovered} unpriced leg(s) winning is a bonus: "
+                f"keep all collected premiums, owe $0."
+            )
+        else:
+            trigger_note = (
+                f"Sum of YES mids = {total:.4f} > {threshold} — "
+                "sell YES on all outcomes. Collect sum(YES_mids) > $1; "
+                "owe exactly $1 at resolution. Profit locked at fill."
+            )
+
+    # fair_p based on total legs so EV accounts for the full outcome space
+    fair_p = 1.0 / total_legs
     ev_per_outcome = [
-        round(yes_ev(1.0 - fair_p, 1.0 - p), 4)
-        for _, p, _ in prices
+        round(yes_ev(1.0 - fair_p, 1.0 - r["midpoint"]), 4)
+        for r in records
     ]
     avg_ev = round(sum(ev_per_outcome) / n, 4) if ev_per_outcome else 0.0
 
     return {
-        "strategy":     "neg_risk_overround",
-        "market_id":    None,
-        "event_slug":   event_slug,
-        "num_outcomes": n,
-        "sum_prices":   round(total, 6),
-        "overround":    round(overround, 6),
-        "edge_pct":     round(overround * 100, 4),
-        "signal_score": round(overround, 6),
-        "ev":           avg_ev,
-        "ev_side":      "NO (all outcomes)",
-        "sizing_note":  (
-            f"Sell NO on all {n} outcomes | "
+        "strategy":       "neg_risk_overround",
+        "arb_type":       arb_type,
+        "market_id":      None,
+        "event_slug":     event_slug,
+        "num_outcomes":   n,
+        "total_legs":     total_legs,
+        "uncovered_legs": uncovered,
+        "sum_prices":     round(total, 6),
+        "sum_asks":       round(sum_asks, 6),
+        "sum_mids":       round(sum_mids, 6),
+        "overround":      round(overround, 6),
+        "edge_pct":       round(overround * 100, 4),
+        "signal_score":   round(overround, 6),
+        "ev":             avg_ev,
+        "ev_side":        ev_side,
+        "sizing_note":    (
+            f"{ev_side} | "
             f"avg EV={avg_ev*100:.1f}% per outcome | "
             f"over-round={overround*100:.2f}c"
+            + (f" | {uncovered}/{total_legs} legs unpriced (bonus if won)" if uncovered > 0 else "")
         ),
         "outcomes": [
             {
-                "question": q, "yes_price": round(p, 4), "market_id": mid,
-                "ev_no": round(yes_ev(1.0 - fair_p, 1.0 - p), 4),
+                "question":     r["question"],
+                "market_id":    r["market_id"],
+                "yes_price":    round(r["midpoint"], 4),
+                "yes_ask":      round(r["ask"], 4),
+                "yes_token_id": r["yes_token_id"],
+                "no_price":     round(r["no_price"], 4),
+                "no_ask":       round(r["no_ask"], 4) if r["no_ask"] is not None else None,
+                "no_token_id":  r["no_token_id"],
+                "ev_no":        round(yes_ev(1.0 - fair_p, 1.0 - r["midpoint"]), 4),
             }
-            for q, p, mid in sorted(prices, key=lambda x: x[1], reverse=True)
+            for r in sorted(records, key=lambda x: x["midpoint"], reverse=True)
         ],
-        "note": (
-            f"Sum of {n} outcome prices = {total:.4f}. "
-            f"Over-round of {overround*100:.2f}c. "
-            f"Selling NO on all outcomes yields a theoretical edge."
-        ),
+        "trigger": trigger_note,
     }
 
 

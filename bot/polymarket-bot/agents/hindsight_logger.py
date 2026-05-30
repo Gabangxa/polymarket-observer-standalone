@@ -2,18 +2,14 @@
 # Closes the feedback loop: when a market fully resolves (YES/NO),
 # find signals emitted before it resolved and record the true outcome.
 #
-# Covers: mean_reversion and odds_shift signals (both are directional bets).
-# Skips: spread_harvesting (market-neutral), neg_risk_overround (multi-outcome).
+# Covers:
+#   tail_yield_engine — YES bet: always correct when resolved YES
+#
+# Skips: spread_engine, neg_risk_overround — handled by outcome_tracker's snapshot window
 #
 # Resolution mapping:
 #   resolutionPrice == "1" → market resolved YES
 #   resolutionPrice == "0" → market resolved NO
-#
-# Signal outcome:
-#   mean_reversion  direction="up"   → predicted price drops → correct if resolved NO
-#   mean_reversion  direction="down" → predicted price rises → correct if resolved YES
-#   odds_shift      direction="up"   → predicted reversion down → correct if resolved NO
-#   odds_shift      direction="down" → predicted reversion up   → correct if resolved YES
 
 import logging
 import api
@@ -21,7 +17,7 @@ import db
 
 logger = logging.getLogger(__name__)
 
-DIRECTIONAL_STRATEGIES = {"mean_reversion", "odds_shift"}
+TAIL_STRATEGIES = {"tail_yield_engine"}
 
 
 def _resolution_price(market_data: dict) -> float | None:
@@ -37,9 +33,15 @@ def _resolution_price(market_data: dict) -> float | None:
 
 def _signal_correct(signal: dict, resolved_yes: bool) -> bool | None:
     """
-    Determine if a directional signal was correct given the final resolution.
-    Returns None if the signal doesn't have a clear direction.
+    Determine if a signal was correct given the final resolution.
+    Returns None if outcome cannot be determined from the signal data.
     """
+    strategy = signal.get("strategy")
+
+    # Tail yield is always a YES bet — no direction field needed
+    if strategy == "tail_yield_engine":
+        return resolved_yes
+
     meta      = signal.get("metadata") or {}
     direction = meta.get("direction") or signal.get("direction")
     if not direction:
@@ -57,9 +59,9 @@ def _signal_correct(signal: dict, resolved_yes: bool) -> bool | None:
 def run() -> dict:
     logger.info("=== Hindsight logger starting ===")
 
-    # Fetch all unresolved directional signals
+    # Fetch all unresolved signals that need resolution-based outcome scoring
     all_unresolved = []
-    for strategy in DIRECTIONAL_STRATEGIES:
+    for strategy in TAIL_STRATEGIES:
         signals = db.get_unresolved_signals(strategy=strategy, older_than_hours=0)
         all_unresolved.extend(signals)
 
@@ -110,16 +112,23 @@ def run() -> dict:
             skipped_count += 1
             continue
 
-        # PnL: entry_price stored in metadata as trade_price or yes_price
-        meta        = signal.get("metadata") or {}
-        entry_price = float(meta.get("trade_price") or meta.get("latest_price") or meta.get("yes_price") or 0)
-        exit_price  = float(resolution_price)
+        meta       = signal.get("metadata") or {}
+        exit_price = float(resolution_price)
 
-        direction = meta.get("direction") or ""
-        if direction == "down":   # bet YES
+        if signal.get("strategy") == "tail_yield_engine":
+            # Tail yield: bought YES at current_price, resolved at 1.0 or 0.0
+            entry_price = float(meta.get("current_price") or 0)
             pnl = exit_price - entry_price
-        else:                     # bet NO — paid (1-entry), wins (1-exit)
-            pnl = (1.0 - entry_price) - (1.0 - exit_price)
+        else:
+            # Directional signals: entry via trade_price / latest_price / yes_price
+            entry_price = float(
+                meta.get("trade_price") or meta.get("latest_price") or meta.get("yes_price") or 0
+            )
+            direction = meta.get("direction") or ""
+            if direction == "down":   # bet YES
+                pnl = exit_price - entry_price
+            else:                     # bet NO — paid (1-entry), wins (1-exit)
+                pnl = (1.0 - entry_price) - (1.0 - exit_price)
 
         db.update_signal_outcome(signal["id"], exit_price, round(pnl, 6), outcome)
         resolved_count += 1
@@ -128,6 +137,20 @@ def run() -> dict:
             f"{'CORRECT' if outcome else 'WRONG'} | "
             f"resolved={'YES' if resolved_yes else 'NO'} | pnl={pnl:+.4f}"
         )
+
+    # Book realized PnL on positions for every market that resolved.
+    # Realized PnL formula: (exit_price - avg_cost) × net_shares
+    # This is distinct from signal PnL above (which uses signal entry prices).
+    positions_booked = 0
+    for market_id, resolution_price in resolved_markets.items():
+        try:
+            db.book_realized_pnl(market_id, float(resolution_price))
+            positions_booked += 1
+        except Exception as e:
+            logger.warning(f"  Could not book realized PnL for {market_id}: {e}")
+
+    if positions_booked:
+        logger.info(f"Realized PnL booked for {positions_booked} resolved market(s)")
 
     logger.info(f"Hindsight logger done — resolved: {resolved_count}, skipped: {skipped_count}")
     return {

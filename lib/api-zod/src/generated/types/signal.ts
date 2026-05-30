@@ -19,4 +19,10 @@ export interface Signal {
   pnl?: string | null;
   resolved?: boolean | null;
   question?: string | null;
+  /** True once the executor has handled this signal (placed an order or skipped with a reason). Prevents re-processing each cycle.
+   */
+  executed?: boolean | null;
+  /** Set when the executor skipped placing an order for this signal (e.g. size_below_floor, missing_token_id). Mutually exclusive with orders.status='REJECTED' which records CLOB-side rejections.
+   */
+  executedSkipReason?: string | null;
 }

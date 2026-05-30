@@ -124,7 +124,7 @@ export default function Docs() {
             {
               step: "2",
               title: "Collect & analyse",
-              body: "Every 5 minutes it snapshots each watched market — prices, spread, open interest, price history — and runs three strategy engines against the data.",
+              body: "Every 5 minutes it snapshots each watched market — prices, spread, open interest, price history — and runs six strategy engines against the data.",
               icon: Activity,
             },
             {
@@ -187,7 +187,7 @@ export default function Docs() {
               color: "text-success",
               summary: "Did the signals actually work?",
               detail:
-                "Scorecard shows win rate and average PnL per strategy across all resolved signals. The accuracy trend bar chart shows daily win rates — green bars are days above 50%, red below. The category breakdown shows which market types (politics, crypto, sports…) each strategy performs best on.",
+                "Scorecard shows win rate and average PnL per strategy across all resolved signals — in real USDC amounts based on your configured bet size. Use the bet size input (top-right of the page) to set your notional stake per signal; the Est. Total P&L card updates instantly. The accuracy trend bar chart shows daily win rates — green bars are days above 50%, red below. The category breakdown shows which market types (politics, crypto, sports…) each strategy performs best on.",
             },
             {
               href: "/snapshots",
@@ -224,16 +224,16 @@ export default function Docs() {
 
       {/* Strategies */}
       <div>
-        <SectionHeading><Zap size={18} className="text-primary" /> The three strategy engines</SectionHeading>
+        <SectionHeading><Zap size={18} className="text-primary" /> Strategy engines</SectionHeading>
         <div className="space-y-4">
 
           <div className="terminal-panel p-6 border-l-4 border-l-yellow-500/60">
             <div className="flex items-center gap-2 mb-3">
-              <Badge className="bg-yellow-500/10 text-yellow-400 border-yellow-500/20">spread_harvesting</Badge>
+              <Badge className="bg-yellow-500/10 text-yellow-400 border-yellow-500/20">spread_engine</Badge>
               <span className="text-xs font-mono text-muted-foreground">Resolution window: 2 hours</span>
             </div>
             <p className="text-sm text-muted-foreground leading-relaxed mb-3">
-              On every prediction market there's a <span className="text-foreground">bid-ask spread</span> — the gap between the cheapest YES you can buy and the cheapest NO you can buy. If that gap is large enough to cover round-trip trading fees with profit left over, you can act as a market maker: post both sides and collect the spread when orders fill.
+              On every prediction market there's a <span className="text-foreground">bid-ask spread</span> — the gap between the cheapest YES you can buy and the cheapest NO you can buy. If that gap is large enough to cover round-trip trading fees with profit left over, you can act as a market maker: post a passive bid one tick below the current ask and collect the spread when orders cross to you.
             </p>
             <div className="bg-muted/30 rounded p-3 font-mono text-xs space-y-1">
               <div className="text-muted-foreground">Signal fires when:</div>
@@ -264,25 +264,24 @@ export default function Docs() {
             </p>
           </div>
 
-          <div className="terminal-panel p-6 border-l-4 border-l-blue-500/60">
+          <div className="terminal-panel p-6 border-l-4 border-l-orange-500/60">
             <div className="flex items-center gap-2 mb-3">
-              <Badge className="bg-blue-500/10 text-blue-400 border-blue-500/20">mean_reversion</Badge>
-              <span className="text-xs font-mono text-muted-foreground">Resolution window: 4 hours</span>
+              <Badge className="bg-orange-500/10 text-orange-400 border-orange-500/20">tail_yield_engine</Badge>
+              <span className="text-xs font-mono text-muted-foreground">Resolution window: at expiry</span>
             </div>
             <p className="text-sm text-muted-foreground leading-relaxed mb-3">
-              In thin markets with low open interest, a single large order can move the price sharply without any new real-world information. These dislocations tend to partially reverse. The engine flags markets where the price moved more than a threshold within a rolling window, penalised by open interest (high OI = real move, not noise).
+              Near-certain outcomes approaching expiry are underpriced relative to their implied yield. When a YES price is ≥ 95¢ but less than 99¢ and the market closes within 48 hours, buying YES and holding to resolution provides a risk-adjusted yield comparable to short-term fixed income — but in a binary contract form.
             </p>
             <div className="bg-muted/30 rounded p-3 font-mono text-xs space-y-1">
               <div className="text-muted-foreground">Signal fires when:</div>
-              <div>
-                <span className="text-success">|end_price − start_price|</span> &gt;{" "}
-                <span className="text-primary">REVERSION_PRICE_MOVE_THRESHOLD</span>
-              </div>
-              <div className="text-muted-foreground mt-2">Score = delta × (1 − OI_penalty × 0.5)</div>
-              <div className="text-muted-foreground">Direction stored in metadata (up/down)</div>
+              <div><span className="text-success">yes_price</span> ≥ <span className="text-primary">YIELD_MIN_PRICE (0.95)</span> AND yes_price &lt; 0.99</div>
+              <div><span className="text-success">hours_to_close</span> ≤ <span className="text-primary">YIELD_HOURS_TO_EXPIRY (48)</span></div>
+              <div className="text-muted-foreground mt-2">yield_pct = ((1 / yes_price) − 1) × 100</div>
+              <div className="text-muted-foreground">Score = yield_pct / 5.0 (5% yield = 1.0 score)</div>
+              <div className="text-muted-foreground">Metadata: hours_remaining, current_price, yield_percentage</div>
             </div>
             <p className="text-sm text-muted-foreground mt-3">
-              <span className="text-foreground font-medium">In plain terms:</span> if a $50k market swings from $0.30 to $0.65 in two hours for no apparent reason, it's likely noise — bet on it returning toward $0.30.
+              <span className="text-foreground font-medium">Expected frequency:</span> moderate — depends on how many markets are in the final 48 hours with high YES prices.
             </p>
           </div>
 
@@ -305,7 +304,7 @@ export default function Docs() {
               <tr>
                 <td className="px-4 py-3 font-mono text-xs text-foreground whitespace-nowrap">Strategy</td>
                 <td className="px-4 py-3">Which engine detected the opportunity</td>
-                <td className="px-4 py-3"><Badge className="bg-yellow-500/10 text-yellow-400 border-yellow-500/20">spread_harvesting</Badge></td>
+                <td className="px-4 py-3"><Badge className="bg-yellow-500/10 text-yellow-400 border-yellow-500/20">spread_engine</Badge></td>
               </tr>
               <tr>
                 <td className="px-4 py-3 font-mono text-xs text-foreground whitespace-nowrap">Score</td>
@@ -375,9 +374,9 @@ export default function Docs() {
               note: "≥60% is strong. 40–60% is normal. <40% suggests the signal logic needs tuning.",
             },
             {
-              term: "Avg PnL",
-              def: "Average paper profit/loss per resolved signal, in price units (¢ per $1 contract). A strategy can have <50% win rate but still be profitable if wins are larger than losses.",
-              note: "A positive avg PnL with ≥40% win rate is the target profile.",
+              term: "Avg PnL (USDC)",
+              def: "Average paper profit/loss per resolved signal in USDC, calculated as the raw price-fraction PnL multiplied by your configured bet size. A strategy can have <50% win rate but still be profitable if wins are larger than losses.",
+              note: "A positive avg PnL with ≥40% win rate is the target profile. Change the bet size on the Performance page to model different position sizes.",
             },
             {
               term: "Signal Count",
@@ -424,7 +423,7 @@ export default function Docs() {
           </FaqItem>
 
           <FaqItem q="What does 'score' actually mean — is higher always better?">
-            Generally yes, but the scale differs per strategy. For <strong>spread_harvesting</strong> and <strong>mean_reversion</strong> it's 0–1 (fraction of spread that's profit / price delta magnitude). For <strong>neg_risk</strong> it's the raw overround (0.05 = 5¢ edge). Don't compare scores across strategies — compare within a strategy over time.
+            Generally yes, but the scale differs per strategy. For <strong>spread_engine</strong> it's 0–1 (fraction of spread that's net edge after fees). For <strong>neg_risk_overround</strong> it's the raw overround (0.05 = 5¢ edge across all legs). For <strong>tail_yield_engine</strong> it's the annualised yield percentage ÷ 5 (5% yield = score 1.0). Don't compare scores across strategies — compare within a strategy over time.
           </FaqItem>
 
           <FaqItem q="Why is my win rate blank / showing '—'?">
@@ -445,6 +444,10 @@ export default function Docs() {
 
           <FaqItem q="I see 'No signals match the current filter' — is the bot working?">
             Most likely yes. The signals table defaults to the last 24 hours. If the bot only started recently, or if no markets crossed the strategy thresholds in the last cycle, the table will be empty. Check the Overview page — if Data Snapshots is increasing over time, collection is working. You can also switch the filter to ALL and extend the window.
+          </FaqItem>
+
+          <FaqItem q="What is the bet size input on the Performance page?">
+            The bet size (top-right of the Performance page, default $100) is a notional position size used to convert raw PnL fractions into real USDC dollar figures. For example, a raw PnL of +0.032 on a $100 bet = <strong>+$3.20</strong>. It affects the Avg PnL (USDC) columns in both tables and the Est. Total P&L summary card. The value is saved in your browser's local storage so it persists between sessions.
           </FaqItem>
 
         </div>

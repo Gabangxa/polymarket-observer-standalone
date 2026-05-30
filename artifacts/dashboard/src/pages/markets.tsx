@@ -4,12 +4,14 @@ import { useLocation } from "wouter";
 import { Search, Filter, ArrowUpDown } from "lucide-react";
 import { useLiveMarkets } from "@/hooks/use-polymarket";
 import { TableSkeleton, Badge } from "@/components/ui-elements";
-import { formatCurrency, formatPercent, parseNumeric } from "@/lib/utils";
+import { formatCurrency, formatPercent, parseNumeric, formatInTz } from "@/lib/utils";
+import { useTimezone } from "@/hooks/use-timezone";
 
 export default function Markets() {
   const [, setLocation] = useLocation();
   const { data, isLoading } = useLiveMarkets();
   const [search, setSearch] = useState("");
+  const { timezone } = useTimezone();
 
   const filteredMarkets = data?.markets.filter(m => 
     m.question?.toLowerCase().includes(search.toLowerCase()) || 
@@ -108,7 +110,7 @@ export default function Markets() {
                       </div>
                     </td>
                     <td className="px-4 py-4 text-right font-mono text-xs text-muted-foreground">
-                      {market.endDate ? new Date(market.endDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'N/A'}
+                      {market.endDate ? formatInTz(market.endDate, "MMM d", timezone) : 'N/A'}
                     </td>
                   </tr>
                 ))

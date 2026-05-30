@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   getHealthCheckQueryOptions,
   getListMarketsQueryOptions,
@@ -6,8 +6,21 @@ import {
   getGetMarketSnapshotsQueryOptions,
   getListSignalsQueryOptions,
   getGetSignalCountsQueryOptions,
+  getListOrdersQueryOptions,
+  getListPositionsQueryOptions,
+  getGetPortfolioQueryOptions,
+  useCancelOrder,
+  useCancelAllOrders,
+  customFetch,
 } from "@workspace/api-client-react";
-import type { ListSnapshotsParams, GetMarketSnapshotsParams, ListSignalsParams } from "@workspace/api-client-react";
+import type {
+  ListSnapshotsParams,
+  GetMarketSnapshotsParams,
+  ListSignalsParams,
+  ListOrdersParams,
+} from "@workspace/api-client-react";
+
+export { useCancelOrder, useCancelAllOrders };
 
 const POLLING_INTERVAL = 30000;
 
@@ -89,6 +102,177 @@ export function useStrategyPerformance() {
       return res.json();
     },
     refetchInterval: POLLING_INTERVAL,
+  });
+}
+
+export interface OrderAnalyticsRow {
+  strategy: string;
+  sent: number; filled: number; rejected: number;
+  canceled: number; expired: number; error: number; active: number;
+}
+
+export interface OrderAnalytics {
+  totals:     Omit<OrderAnalyticsRow, "strategy">;
+  byStrategy: OrderAnalyticsRow[];
+}
+
+export function useOrderAnalytics() {
+  return useQuery<OrderAnalytics>({
+    queryKey: ["orders", "analytics"],
+    queryFn: async () => {
+      const res = await fetch("/api/orders/analytics");
+      if (!res.ok) throw new Error("Failed to fetch order analytics");
+      return res.json();
+    },
+    refetchInterval: POLLING_INTERVAL,
+  });
+}
+
+export function useLiveOrders(params?: ListOrdersParams) {
+  return useQuery({
+    ...getListOrdersQueryOptions(params),
+    refetchInterval: POLLING_INTERVAL,
+  });
+}
+
+export function useLivePositions() {
+  return useQuery({
+    ...getListPositionsQueryOptions(),
+    refetchInterval: POLLING_INTERVAL,
+  });
+}
+
+export function useLivePortfolio() {
+  return useQuery({
+    ...getGetPortfolioQueryOptions(),
+    refetchInterval: POLLING_INTERVAL,
+  });
+}
+
+export interface SubmitSignalPayload {
+  strategy: string;
+  marketId: string;
+  signalScore: string;
+  metadata: Record<string, unknown>;
+}
+
+export function useSubmitSignal() {
+  return useMutation({
+    mutationFn: (payload: SubmitSignalPayload) =>
+      customFetch<{ id: number }>("/api/signals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+  });
+}
+
+export function useSetBankroll() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (bankroll: number) => {
+      const res = await fetch("/api/config/bankroll", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bankroll }),
+      });
+      if (!res.ok) throw new Error("Failed to save bankroll");
+      return res.json() as Promise<{ bankroll: number }>;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/portfolio"] });
+    },
+  });
+}
+
+export function useRiskConfig() {
+  return useQuery<{ positionPct: number; portfolioPct: number }>({
+    queryKey: ["config", "risk"],
+    queryFn: async () => {
+      const res = await fetch("/api/config/risk");
+      if (!res.ok) throw new Error("Failed to fetch risk config");
+      return res.json();
+    },
+    refetchInterval: POLLING_INTERVAL,
+  });
+}
+
+export function useSetPositionPct() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (pct: number) => {
+      const res = await fetch("/api/config/position-pct", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pct }),
+      });
+      if (!res.ok) throw new Error("Failed to save position cap");
+      return res.json() as Promise<{ positionPct: number }>;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["config", "risk"] }),
+  });
+}
+
+export function useSetPortfolioPct() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (pct: number) => {
+      const res = await fetch("/api/config/portfolio-pct", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pct }),
+      });
+      if (!res.ok) throw new Error("Failed to save portfolio cap");
+      return res.json() as Promise<{ portfolioPct: number }>;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["config", "risk"] }),
+  });
+}
+
+export type ConnectionStatus = {
+  clobReachable: boolean;
+  walletAuthenticated: boolean;
+  checkedAt: string;
+  error?: string | null;
+};
+
+export function useExecutorStatus() {
+  return useQuery<{ paused: boolean; connection: ConnectionStatus | null }>({
+    queryKey: ["execution", "status"],
+    queryFn: async () => {
+      const res = await fetch("/api/execution/status");
+      if (!res.ok) throw new Error("Failed to fetch executor status");
+      return res.json();
+    },
+    refetchInterval: POLLING_INTERVAL,
+  });
+}
+
+export function usePauseExecutor() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/execution/pause", { method: "POST" });
+      if (!res.ok) throw new Error("Failed to pause executor");
+      return res.json() as Promise<{ paused: boolean }>;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["execution", "status"] });
+    },
+  });
+}
+
+export function useResumeExecutor() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/execution/resume", { method: "POST" });
+      if (!res.ok) throw new Error("Failed to resume executor");
+      return res.json() as Promise<{ paused: boolean }>;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["execution", "status"] });
+    },
   });
 }
 

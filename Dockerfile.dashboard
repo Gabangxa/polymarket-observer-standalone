@@ -1,7 +1,7 @@
 # Stage 1: install dependencies
 FROM node:24-slim AS deps
 WORKDIR /app
-RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
 COPY lib/api-client-react/package.json lib/api-client-react/
 COPY lib/api-spec/package.json lib/api-spec/

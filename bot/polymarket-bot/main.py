@@ -1,5 +1,5 @@
 # main.py — run the full pipeline once
-# Order: schema init → scanner → collector → [spread, neg_risk, reversion] → outcome_tracker
+# Order: schema init → scanner → collector → pnl_tracker → [spread, neg_risk, tail_yield] → outcome_tracker
 
 import glob
 import json
@@ -9,12 +9,13 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from config import LOGS_DIR, STATE_DIR, LOG_RETENTION_DAYS, ZERO_SIGNAL_STREAK_WARN
+from config import LOGS_DIR, STATE_DIR, LOG_RETENTION_DAYS, ZERO_SIGNAL_STREAK_WARN, POLL_INTERVAL_SECONDS, SNAPSHOT_RETENTION_DAYS
 
 os.makedirs(LOGS_DIR, exist_ok=True)
 os.makedirs(STATE_DIR, exist_ok=True)
 
-_STREAKS_FILE = os.path.join(STATE_DIR, "engine_streaks.json")
+_STREAKS_FILE   = os.path.join(STATE_DIR, "engine_streaks.json")
+_LOG_CLEANUP_FILE = os.path.join(STATE_DIR, "last_log_cleanup.txt")
 
 today    = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 log_path = os.path.join(LOGS_DIR, f"run_{today}.log")
@@ -33,14 +34,25 @@ logger = logging.getLogger("main")
 import alerts
 import db
 from agents import market_scanner, data_collector
-from agents import spread_engine, neg_risk_engine, reversion_engine, outcome_tracker
-from agents import odds_shift_engine, hindsight_logger
+from agents import spread_engine, neg_risk_engine, outcome_tracker
+from agents import hindsight_logger
+from agents import tail_yield_engine
+from agents import pnl_tracker
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _cleanup_old_logs() -> None:
-    """Delete .log files in LOGS_DIR older than LOG_RETENTION_DAYS days."""
+    """Delete .log files in LOGS_DIR older than LOG_RETENTION_DAYS days.
+    Runs at most once per UTC day to avoid repeated filesystem scans."""
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    try:
+        with open(_LOG_CLEANUP_FILE) as f:
+            if f.read().strip() == today_str:
+                return  # already ran today
+    except FileNotFoundError:
+        pass
+
     cutoff = time.time() - LOG_RETENTION_DAYS * 86_400
     removed = 0
     for path in glob.glob(os.path.join(LOGS_DIR, "*.log")):
@@ -50,8 +62,20 @@ def _cleanup_old_logs() -> None:
                 removed += 1
         except OSError:
             pass
+
+    try:
+        with open(_LOG_CLEANUP_FILE, "w") as f:
+            f.write(today_str)
+    except OSError:
+        pass
+
     if removed:
         logger.info(f"Log cleanup: removed {removed} file(s) older than {LOG_RETENTION_DAYS} days")
+
+    try:
+        db.prune_old_snapshots()
+    except Exception as e:
+        logger.warning(f"Snapshot pruning skipped (DB not ready?): {e}")
 
 
 def _update_signal_streaks(results: dict) -> None:
@@ -70,7 +94,7 @@ def _update_signal_streaks(results: dict) -> None:
     now = datetime.now(timezone.utc).isoformat()
     agents = results.get("agents", {})
 
-    for engine in ("spread_engine", "neg_risk_engine", "reversion_engine"):
+    for engine in ("spread_engine", "neg_risk_engine", "tail_yield_engine"):
         result = agents.get(engine, {})
         if "error" in result:
             continue  # crashed run — don't touch the streak counter
@@ -85,12 +109,14 @@ def _update_signal_streaks(results: dict) -> None:
             streaks[engine] = {"streak": streak, "last_signal_at": entry["last_signal_at"]}
             if streak >= ZERO_SIGNAL_STREAK_WARN:
                 last = entry["last_signal_at"] or "never"
+                elapsed_min = streak * POLL_INTERVAL_SECONDS // 60
                 logger.warning(
                     f"ZERO-SIGNAL STREAK: {engine} has produced 0 signals for "
-                    f"{streak} consecutive runs (~{streak * 5} min). "
+                    f"{streak} consecutive runs (~{elapsed_min} min). "
                     f"Last signal at: {last}"
                 )
-                alerts.zero_signal_streak(engine, streak, entry["last_signal_at"])
+                alerts.zero_signal_streak(engine, streak, entry["last_signal_at"],
+                                          poll_interval_secs=POLL_INTERVAL_SECONDS)
 
     try:
         with open(_STREAKS_FILE, "w") as f:
@@ -135,11 +161,18 @@ def run_pipeline(skip_scan=False):
         logger.error(f"data_collector crashed: {e}", exc_info=True)
         results["agents"]["data_collector"] = {"error": str(e)}
 
+    try:
+        result = pnl_tracker.run()
+        results["agents"]["pnl_tracker"] = result
+        logger.info(f"PnL tracker: {result}")
+    except Exception as e:
+        logger.error(f"pnl_tracker crashed: {e}", exc_info=True)
+        results["agents"]["pnl_tracker"] = {"error": str(e)}
+
     for name, agent in [
-        ("spread_engine",    spread_engine),
-        ("neg_risk_engine",  neg_risk_engine),
-        ("reversion_engine", reversion_engine),
-        ("odds_shift_engine", odds_shift_engine),
+        ("spread_engine",     spread_engine),
+        ("neg_risk_engine",   neg_risk_engine),
+        ("tail_yield_engine", tail_yield_engine),
     ]:
         try:
             result = agent.run()
@@ -190,7 +223,7 @@ def _print_summary(results):
               f"{co.get('failed',0)} failed")
 
     total = 0
-    for engine in ["spread_engine", "neg_risk_engine", "reversion_engine", "odds_shift_engine"]:
+    for engine in ["spread_engine", "neg_risk_engine", "tail_yield_engine"]:
         e   = agents.get(engine, {})
         n   = e.get("signals", 0)
         total += n

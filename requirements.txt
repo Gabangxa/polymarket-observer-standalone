@@ -1,2 +1,11 @@
-httpx==0.27.0
-psycopg2-binary==2.9.9
+# Bot runtime dependencies (installed by Dockerfile.bot via pip).
+# Source of truth for the bot service. Keep pyproject.toml aligned with this.
+#
+# Every import in bot/polymarket-bot/ must map to a pinned package below.
+# If you add a new runtime import, add it here and update pyproject.toml in the same commit.
+
+httpx==0.27.0              # api.py — Polymarket Gamma/CLOB/Data HTTP client
+psycopg2-binary==2.9.9     # db.py — Postgres driver + connection pool
+flask==3.0.3               # server.py — kill-switch HTTP endpoints
+nats-py>=2.6.0             # nats_bus.py, signal_router.py — pub/sub fast-path
+py-clob-client>=0.17.0     # execution/auth.py, order_manager.py — CLOB order placement

@@ -23,6 +23,7 @@ export const marketsTable = pgTable("markets", {
   endDate: timestamp("end_date", { withTimezone: true }),
   hoursToClose: numeric("hours_to_close"),
   feesEnabled: boolean("fees_enabled").default(false),
+  category: text("category"),
   score: numeric("score"),
   addedAt: timestamp("added_at", { withTimezone: true }).defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),

@@ -1,6 +1,7 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { formatDistanceToNow, parseISO } from "date-fns";
+import { formatDistanceToNow, parseISO, format } from "date-fns";
+import { TZDate } from "@date-fns/tz";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -45,9 +46,23 @@ export function formatRelativeTime(dateStr: string | null | undefined): string {
   }
 }
 
+export function formatInTz(
+  dateInput: string | Date | null | undefined,
+  pattern: string,
+  tz: string
+): string {
+  if (!dateInput) return "-";
+  try {
+    const d = typeof dateInput === "string" ? parseISO(dateInput) : dateInput;
+    return format(new TZDate(d, tz), pattern);
+  } catch {
+    return "-";
+  }
+}
+
 export function getStrategyColor(strategy: string): string {
   if (strategy.includes("spread")) return "text-blue-400 bg-blue-400/10 border-blue-400/20";
   if (strategy.includes("neg_risk")) return "text-purple-400 bg-purple-400/10 border-purple-400/20";
-  if (strategy.includes("reversion")) return "text-amber-400 bg-amber-400/10 border-amber-400/20";
+  if (strategy.includes("tail_yield")) return "text-orange-400 bg-orange-400/10 border-orange-400/20";
   return "text-slate-400 bg-slate-400/10 border-slate-400/20";
 }

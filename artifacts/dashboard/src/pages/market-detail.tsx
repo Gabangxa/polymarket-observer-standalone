@@ -6,14 +6,15 @@ import {
 } from "recharts";
 import { useLiveMarketHistory, useMarketSignals } from "@/hooks/use-polymarket";
 import { StatCard, Badge } from "@/components/ui-elements";
-import { formatCurrency, formatPrice, parseNumeric, getStrategyColor, formatRelativeTime } from "@/lib/utils";
-import { format } from "date-fns";
+import { formatCurrency, formatPrice, parseNumeric, getStrategyColor, formatRelativeTime, formatInTz } from "@/lib/utils";
+import { useTimezone } from "@/hooks/use-timezone";
 
 export default function MarketDetail() {
   const [, params] = useRoute("/markets/:id");
   const marketId = params?.id || "";
+  const { timezone } = useTimezone();
 
-  const { data, isLoading, isError } = useLiveMarketHistory(marketId, { limit: 168 });
+  const { data, isLoading, isError } = useLiveMarketHistory(marketId, { hours: 168 });
   const { data: signalsData } = useMarketSignals(marketId);
   const latestSignal = signalsData?.signals?.[0] ?? null;
 
@@ -42,7 +43,7 @@ export default function MarketDetail() {
 
   // The snapshots are returned DESC order. For charting, we want ASC order.
   const chartData = [...data.snapshots].reverse().map(s => ({
-    time: s.collectedAt ? format(new Date(s.collectedAt), "MMM dd HH:mm") : "",
+    time: formatInTz(s.collectedAt, "MMM dd HH:mm", timezone),
     yes: parseNumeric(s.yesPrice),
     no: parseNumeric(s.noPrice),
     midpoint: parseNumeric(s.midpoint),

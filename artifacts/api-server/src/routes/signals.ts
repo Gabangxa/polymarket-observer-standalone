@@ -32,10 +32,11 @@ router.get("/signals", async (req, res) => {
   try {
     const strategy = req.query.strategy as string | undefined;
     const marketId = req.query.marketId as string | undefined;
-    const hours = Math.min(Number(req.query.hours) || 24, 168);
+    const hours = Math.min(Number(req.query.hours) || 24, 336);
     const limit = Math.min(Number(req.query.limit) || 100, 500);
+    const resolvedParam = req.query.resolved as string | undefined;
 
-    const cutoff = sql`NOW() - INTERVAL '${sql.raw(String(hours))} hours'`;
+    const cutoff = sql`NOW() - ${hours} * INTERVAL '1 hour'`;
 
     const conditions = [gt(signalsTable.emittedAt, cutoff)];
     if (strategy) {
@@ -43,6 +44,9 @@ router.get("/signals", async (req, res) => {
     }
     if (marketId) {
       conditions.push(eq(signalsTable.marketId, marketId));
+    }
+    if (resolvedParam !== undefined) {
+      conditions.push(eq(signalsTable.resolved, resolvedParam === "true"));
     }
 
     const signals = await db
@@ -59,6 +63,8 @@ router.get("/signals", async (req, res) => {
         pnl: signalsTable.pnl,
         resolved: signalsTable.resolved,
         outcome: signalsTable.outcome,
+        executed: signalsTable.executed,
+        executedSkipReason: signalsTable.executedSkipReason,
         question: marketsTable.question,
       })
       .from(signalsTable)
@@ -79,6 +85,10 @@ router.post("/signals", async (req, res) => {
     const body = req.body as InsertSignal;
     if (!body.strategy) {
       res.status(400).json({ error: "strategy is required" });
+      return;
+    }
+    if (body.signalScore != null && parseFloat(String(body.signalScore)) < 0.75) {
+      res.status(400).json({ error: "signalScore must be ≥ 0.75" });
       return;
     }
 

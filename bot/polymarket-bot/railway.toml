@@ -1,0 +1,7 @@
+# railway.toml — bot service configuration
+# Overrides the repo-root railway.toml so the API preDeployCommand
+# does not run inside this Python container (no Node.js available).
+
+[deploy]
+restartPolicyType       = "ON_FAILURE"
+restartPolicyMaxRetries = 3

@@ -3,17 +3,23 @@ import { motion } from "framer-motion";
 import { Filter, Zap } from "lucide-react";
 import { useLiveSignals } from "@/hooks/use-polymarket";
 import { TableSkeleton, Badge } from "@/components/ui-elements";
-import { formatRelativeTime, getStrategyColor, parseNumeric, formatPrice } from "@/lib/utils";
+import { getStrategyColor, parseNumeric, formatPrice } from "@/lib/utils";
 import { Link } from "wouter";
 
 export default function Signals() {
   const [strategyFilter, setStrategyFilter] = useState<string>("");
-  const { data, isLoading } = useLiveSignals({ 
+  const { data, isLoading } = useLiveSignals({
     limit: 200,
-    strategy: strategyFilter || undefined 
+    hours: 168,
+    strategy: strategyFilter || undefined
   });
 
-  const strategies = ["", "spread_engine", "neg_risk_engine", "reversion_engine"];
+  const strategies: { value: string; label: string }[] = [
+    { value: "",                   label: "ALL" },
+    { value: "spread_engine",      label: "Spread" },
+    { value: "neg_risk_overround", label: "Neg Risk" },
+    { value: "tail_yield_engine",  label: "Tail Yield" },
+  ];
 
   return (
     <motion.div 
@@ -27,22 +33,22 @@ export default function Signals() {
             <Zap className="text-primary" /> Strategy Signals
           </h2>
           <p className="text-sm text-muted-foreground font-mono mt-1">
-            Algorithmic trade opportunities from the last 24 hours
+            Algorithmic trade opportunities from the last 7 days
           </p>
         </div>
         
         <div className="flex bg-card border border-border p-1 rounded-md">
-          {strategies.map(strat => (
+          {strategies.map(({ value, label }) => (
             <button
-              key={strat}
-              onClick={() => setStrategyFilter(strat)}
+              key={value}
+              onClick={() => setStrategyFilter(value)}
               className={`px-3 py-1.5 text-xs font-mono rounded transition-colors ${
-                strategyFilter === strat 
-                  ? "bg-primary text-primary-foreground font-bold" 
+                strategyFilter === value
+                  ? "bg-primary text-primary-foreground font-bold"
                   : "text-muted-foreground hover:bg-accent hover:text-foreground"
               }`}
             >
-              {strat === "" ? "ALL" : strat.replace("_engine", "").toUpperCase()}
+              {label}
             </button>
           ))}
         </div>
@@ -56,6 +62,7 @@ export default function Signals() {
                 <th className="px-4 py-3 font-medium">Time</th>
                 <th className="px-4 py-3 font-medium">Strategy</th>
                 <th className="px-4 py-3 font-medium">Target Market</th>
+                <th className="px-4 py-3 font-medium">Trigger</th>
                 <th className="px-4 py-3 font-medium text-right">Score</th>
                 <th className="px-4 py-3 font-medium text-right">Entry Price</th>
                 <th className="px-4 py-3 font-medium text-center">Status</th>
@@ -63,10 +70,10 @@ export default function Signals() {
             </thead>
             <tbody className="divide-y divide-border/50">
               {isLoading ? (
-                <tr><td colSpan={6} className="p-4"><TableSkeleton /></td></tr>
+                <tr><td colSpan={7} className="p-4"><TableSkeleton /></td></tr>
               ) : !data || data.signals.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-12 text-center text-muted-foreground font-mono">
+                  <td colSpan={7} className="px-4 py-12 text-center text-muted-foreground font-mono">
                     <div className="flex flex-col items-center gap-2">
                       <Filter size={24} className="opacity-20" />
                       No signals match the current filter.
@@ -76,8 +83,13 @@ export default function Signals() {
               ) : (
                 data.signals.map((signal) => (
                   <tr key={signal.id} className="data-row">
-                    <td className="px-4 py-4 font-mono text-muted-foreground text-xs" title={signal.emittedAt || ""}>
-                      {formatRelativeTime(signal.emittedAt)}
+                    <td className="px-4 py-4 font-mono text-muted-foreground text-xs whitespace-nowrap" title={signal.emittedAt || ""}>
+                      {signal.emittedAt
+                        ? new Date(signal.emittedAt).toLocaleString(undefined, {
+                            month: "short", day: "numeric",
+                            hour: "2-digit", minute: "2-digit", second: "2-digit",
+                          })
+                        : "—"}
                     </td>
                     <td className="px-4 py-4">
                       <Badge className={getStrategyColor(signal.strategy)}>
@@ -93,6 +105,22 @@ export default function Signals() {
                         signal.eventSlug || "Unknown"
                       )}
                     </td>
+                    <td className="px-4 py-4 max-w-[360px] whitespace-normal">
+                      {(() => {
+                        const meta = signal.metadata as Record<string, unknown> | null | undefined;
+                        const text = (meta?.trigger ?? meta?.note) as string | undefined;
+                        return text ? (
+                          <span
+                            className="font-mono text-xs text-muted-foreground leading-relaxed"
+                            title={text}
+                          >
+                            {text.length > 120 ? text.slice(0, 117) + "…" : text}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground/40">—</span>
+                        );
+                      })()}
+                    </td>
                     <td className="px-4 py-4 text-right font-mono text-primary font-bold">
                       {signal.signalScore ? parseNumeric(signal.signalScore).toFixed(2) : "-"}
                     </td>
@@ -100,11 +128,38 @@ export default function Signals() {
                        {signal.entryPrice ? formatPrice(signal.entryPrice) : "-"}
                     </td>
                     <td className="px-4 py-4 text-center">
-                       {signal.resolved ? (
-                         <Badge className="bg-muted text-muted-foreground border-border">Resolved</Badge>
-                       ) : (
-                         <Badge className="bg-primary/20 text-primary border-primary/30 animate-pulse">Active</Badge>
-                       )}
+                       {(() => {
+                         if (signal.resolved) {
+                           return (
+                             <Badge className="bg-muted text-muted-foreground border-border">
+                               Resolved
+                             </Badge>
+                           );
+                         }
+                         if (signal.executedSkipReason) {
+                           return (
+                             <span
+                               title={`Executor skipped this signal: ${signal.executedSkipReason}`}
+                             >
+                               <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/30">
+                                 Skipped: {signal.executedSkipReason}
+                               </Badge>
+                             </span>
+                           );
+                         }
+                         if (signal.executed) {
+                           return (
+                             <Badge className="bg-sky-500/15 text-sky-400 border-sky-500/30">
+                               Executed
+                             </Badge>
+                           );
+                         }
+                         return (
+                           <Badge className="bg-primary/20 text-primary border-primary/30 animate-pulse">
+                             Active
+                           </Badge>
+                         );
+                       })()}
                     </td>
                   </tr>
                 ))

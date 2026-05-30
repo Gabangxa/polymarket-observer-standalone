@@ -143,6 +143,12 @@ export const getMarketSnapshotsQueryLimitDefault = 336;
 
 export const GetMarketSnapshotsQueryParams = zod.object({
   limit: zod.coerce.number().default(getMarketSnapshotsQueryLimitDefault),
+  hours: zod.coerce
+    .number()
+    .optional()
+    .describe(
+      "If provided, return one snapshot per hour over the trailing window (capped at 720h). Overrides limit-based pagination.\n",
+    ),
 });
 
 export const GetMarketSnapshotsResponse = zod.object({
@@ -181,6 +187,7 @@ export const ListSignalsQueryParams = zod.object({
   strategy: zod.coerce.string().optional(),
   hours: zod.coerce.number().default(listSignalsQueryHoursDefault),
   limit: zod.coerce.number().default(listSignalsQueryLimitDefault),
+  resolved: zod.coerce.boolean().optional(),
 });
 
 export const ListSignalsResponse = zod.object({
@@ -198,6 +205,18 @@ export const ListSignalsResponse = zod.object({
       pnl: zod.string().nullish(),
       resolved: zod.boolean().nullish(),
       question: zod.string().nullish(),
+      executed: zod
+        .boolean()
+        .nullish()
+        .describe(
+          "True once the executor has handled this signal (placed an order or skipped with a reason). Prevents re-processing each cycle.\n",
+        ),
+      executedSkipReason: zod
+        .string()
+        .nullish()
+        .describe(
+          "Set when the executor skipped placing an order for this signal (e.g. size_below_floor, missing_token_id). Mutually exclusive with orders.status='REJECTED' which records CLOB-side rejections.\n",
+        ),
     }),
   ),
   count: zod.number(),
@@ -217,6 +236,123 @@ export const CreateSignalBody = zod.object({
   exitPrice: zod.string().nullish(),
   pnl: zod.string().nullish(),
   resolved: zod.boolean().nullish(),
+});
+
+/**
+ * Returns orders filtered by status group and optional date range
+ * @summary List orders
+ */
+export const listOrdersQueryStatusDefault = `active`;
+export const listOrdersQueryLimitDefault = 200;
+
+export const ListOrdersQueryParams = zod.object({
+  status: zod
+    .enum(["active", "closed", "all"])
+    .default(listOrdersQueryStatusDefault),
+  limit: zod.coerce.number().default(listOrdersQueryLimitDefault),
+  since: zod
+    .date()
+    .optional()
+    .describe(
+      "ISO-8601 timestamp; only orders with created_at >= since are returned",
+    ),
+  until: zod
+    .date()
+    .optional()
+    .describe(
+      "ISO-8601 timestamp; only orders with created_at < until are returned",
+    ),
+});
+
+export const ListOrdersResponse = zod.object({
+  orders: zod.array(
+    zod.object({
+      id: zod.number(),
+      clordId: zod.string(),
+      signalId: zod.number().nullish(),
+      marketId: zod.string(),
+      tokenId: zod.string(),
+      side: zod.string(),
+      price: zod.string(),
+      sizeUsdc: zod.string(),
+      strategy: zod.string(),
+      status: zod.string(),
+      exchangeOrderId: zod.string().nullish(),
+      workingQty: zod.string().nullish(),
+      filledQty: zod.string().nullish(),
+      fillPrice: zod.string().nullish(),
+      submittedAt: zod.coerce.date().nullish(),
+      filledAt: zod.coerce.date().nullish(),
+      canceledAt: zod.coerce.date().nullish(),
+      errorMsg: zod.string().nullish(),
+      createdAt: zod.coerce.date().nullish(),
+      question: zod.string().nullish(),
+    }),
+  ),
+  count: zod.number(),
+});
+
+/**
+ * Sets all PENDING_SUBMISSION, SUBMITTED, and PARTIALLY_FILLED orders to CANCEL_REQUESTED
+ * @summary Cancel all active orders
+ */
+export const CancelAllOrdersResponse = zod.object({
+  canceled: zod.number(),
+});
+
+/**
+ * Sets a single active order to CANCEL_REQUESTED status
+ * @summary Cancel a single order
+ */
+export const CancelOrderParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const CancelOrderResponse = zod.object({
+  id: zod.number(),
+  status: zod.string(),
+});
+
+/**
+ * Returns all positions with non-zero net exposure or working quantity
+ * @summary List open positions
+ */
+export const ListPositionsResponse = zod.object({
+  positions: zod.array(
+    zod.object({
+      id: zod.number(),
+      marketId: zod.string(),
+      tokenId: zod.string(),
+      side: zod.string(),
+      totalBought: zod.string().nullish(),
+      totalSold: zod.string().nullish(),
+      workingBuy: zod.string().nullish(),
+      workingSell: zod.string().nullish(),
+      avgCost: zod.string().nullish(),
+      pnlRealized: zod.string().nullish(),
+      pnlOpen: zod.string().nullish(),
+      lastUpdated: zod.coerce.date().nullish(),
+      question: zod.string().nullish(),
+    }),
+  ),
+  count: zod.number(),
+});
+
+/**
+ * Returns configured bankroll, live exposure, available capital, and aggregate PnL across all positions. Reads BANKROLL_USDC from the API server environment variable.
+ * @summary Portfolio summary
+ */
+export const GetPortfolioResponse = zod.object({
+  bankroll: zod
+    .number()
+    .describe("Configured bankroll (BANKROLL_USDC env var on API server)"),
+  atRisk: zod.number().describe("Sum of sizeUsdc for all active orders"),
+  available: zod.number().describe("bankroll minus atRisk"),
+  deployedPct: zod.number().describe("atRisk \/ bankroll as a fraction (0–1)"),
+  pnlRealized: zod
+    .number()
+    .describe("Sum of pnl_realized across all positions"),
+  pnlOpen: zod.number().describe("Sum of pnl_open across all positions"),
 });
 
 /**
