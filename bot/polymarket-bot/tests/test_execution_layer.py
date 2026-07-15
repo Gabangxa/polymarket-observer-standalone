@@ -287,7 +287,10 @@ class TestPreTradeGateCheck:
             ok, _ = ptg.check(_signal(token_ids=[]))
         assert ok
 
-    def test_no_emitted_at_skips_staleness_gate(self):
+    def test_no_emitted_at_hard_rejects(self):
+        # AC-5: a missing emitted_at must fail-closed REJECT, not silently
+        # skip the freshness gate (this test previously asserted the
+        # opposite — the bug this AC fixes).
         sig = _signal()
         sig["emitted_at"] = None
         bl, mp, mx = _live_bankroll()
@@ -295,8 +298,9 @@ class TestPreTradeGateCheck:
              patch.object(ptg.db, "order_exists_for_signal", return_value=False), \
              patch.object(ptg.db, "get_total_open_exposure", return_value=0.0), \
              patch.object(ptg.db, "get_position",            return_value=None):
-            ok, _ = ptg.check(sig)
-        assert ok
+            ok, reason = ptg.check(sig)
+        assert not ok
+        assert "emitted_at" in reason
 
 
 # ── pre_trade_gate.check_reprice ──────────────────────────────────────────────
@@ -334,3 +338,174 @@ class TestPreTradeGateCheckReprice:
             ok, reason = ptg.check_reprice(_signal())
         assert ok
         assert reason == ""
+
+    # ── AC-2 / AC-5: reprice freshness (previously skipped entirely) ───────────
+
+    def test_missing_emitted_at_hard_rejects(self):
+        # AC-5 applies to reprice too: a reprice signal with no emitted_at
+        # (e.g. driving snapshot had no collected_at) fail-closed rejects.
+        sig = _signal()
+        sig["emitted_at"] = None
+        bl, mp, mx = _live_bankroll()
+        with bl, mp, mx:
+            ok, reason = ptg.check_reprice(sig)
+        assert not ok
+        assert "emitted_at" in reason
+
+    def test_stale_snapshot_rejected(self):
+        # AC-2: a reprice built from a stale driving snapshot is rejected.
+        bl, mp, mx = _live_bankroll()
+        with bl, mp, mx:
+            ok, reason = ptg.check_reprice(_signal(age_secs=120))
+        assert not ok
+        assert "stale" in reason
+
+    def test_fresh_snapshot_passes_freshness_gate(self):
+        bl, mp, mx = _live_bankroll()
+        with bl, mp, mx, \
+             patch.object(ptg.db, "get_total_open_exposure", return_value=0.0), \
+             patch.object(ptg.db, "get_position",            return_value=None):
+            ok, reason = ptg.check_reprice(_signal(age_secs=5))
+        assert ok
+        assert reason == ""
+
+
+# ── AC-13: side-correctness in _check_position_exposure ──────────────────────
+
+class TestCheckPositionExposureSideCorrectness:
+    def test_no_side_position_at_cap_now_rejects(self):
+        # Previously hardcoded side="YES" — a NO-side position sitting at
+        # cap was looked up under the wrong side, found nothing, and fell
+        # through to APPROVE. Fixed: querying with the real side finds it.
+        no_position = {"total_bought": Decimal("90"), "working_buy": Decimal("20")}
+
+        def fake_get_position(market_id, token_id, side):
+            return no_position if side == "NO" else None
+
+        bl, mp, mx = _live_bankroll()
+        with bl, mp, mx, patch.object(ptg.db, "get_position", side_effect=fake_get_position):
+            ok, reason = ptg._check_position_exposure("mkt1", "tok_no", "NO")
+        assert not ok
+        assert "position exposure" in reason
+
+    def test_yes_side_behavior_preserved(self):
+        yes_position = {"total_bought": Decimal("90"), "working_buy": Decimal("20")}
+
+        def fake_get_position(market_id, token_id, side):
+            return yes_position if side == "YES" else None
+
+        bl, mp, mx = _live_bankroll()
+        with bl, mp, mx, patch.object(ptg.db, "get_position", side_effect=fake_get_position):
+            ok, reason = ptg._check_position_exposure("mkt1", "tok_yes", "YES")
+        assert not ok
+        assert "position exposure" in reason
+
+    def test_no_side_missing_position_approves_and_queries_correct_side(self):
+        bl, mp, mx = _live_bankroll()
+        with bl, mp, mx, patch.object(ptg.db, "get_position", return_value=None) as m:
+            ok, _ = ptg._check_position_exposure("mkt1", "tok_no", "NO")
+        assert ok
+        m.assert_called_once_with("mkt1", "tok_no", "NO")
+
+    def test_side_for_token_maps_index_zero_to_yes(self):
+        token_ids = ["tok_yes", "tok_no"]
+        assert ptg._side_for_token(token_ids, "tok_yes") == "YES"
+
+    def test_side_for_token_maps_index_one_to_no(self):
+        token_ids = ["tok_yes", "tok_no"]
+        assert ptg._side_for_token(token_ids, "tok_no") == "NO"
+
+    def test_check_still_queries_yes_side_for_existing_single_leg_flow(self):
+        # Existing live strategies (spread_engine, tail_yield_engine) only
+        # ever trade token_ids[0]; confirm check() derives side="YES" for
+        # that leg exactly as before the fix (behavior preserved).
+        bl, mp, mx = _live_bankroll()
+        with bl, mp, mx, \
+             patch.object(ptg.db, "order_exists_for_signal", return_value=False), \
+             patch.object(ptg.db, "get_total_open_exposure", return_value=0.0), \
+             patch.object(ptg.db, "get_position",            return_value=None) as m:
+            ok, _ = ptg.check(_signal())
+        assert ok
+        m.assert_called_once_with("mkt1", "tok_yes", "YES")
+
+    def test_check_reprice_still_queries_yes_side_for_existing_single_leg_flow(self):
+        bl, mp, mx = _live_bankroll()
+        with bl, mp, mx, \
+             patch.object(ptg.db, "get_total_open_exposure", return_value=0.0), \
+             patch.object(ptg.db, "get_position",            return_value=None) as m:
+            ok, _ = ptg.check_reprice(_signal(age_secs=5))
+        assert ok
+        m.assert_called_once_with("mkt1", "tok_yes", "YES")
+
+
+# ── AC-2: executor._evaluate_reprice stamps freshness from the driving snapshot ──
+
+class TestEvaluateRepriceFreshnessStamp:
+    def test_spread_engine_reprice_carries_snapshot_collected_at(self):
+        from unittest.mock import patch as _patch
+        from execution import executor as ex
+
+        collected_at = _NOW - timedelta(seconds=5)
+        order = {
+            "strategy":  "spread_engine",
+            "signal_id": 7,
+            "token_ids": ["tok_yes", "tok_no"],
+            "market_id": "m1",
+            "token_id":  "tok_yes",
+        }
+        snapshot = {"market_id": "m1", "yes_price": 0.5, "collected_at": collected_at}
+        fake_signal = {"strategy": "spread_engine", "market_id": "m1", "signal_score": 0.5, "metadata": {}}
+
+        with _patch("agents.spread_engine._analyse_snapshot", return_value=dict(fake_signal)):
+            result = ex._evaluate_reprice(order, snapshot)
+
+        assert result is not None
+        assert result["emitted_at"] == collected_at
+
+    def test_tail_yield_reprice_carries_snapshot_collected_at(self):
+        from execution import executor as ex
+        from config import YIELD_MIN_PRICE, YIELD_HOURS_TO_EXPIRY
+
+        collected_at = _NOW - timedelta(seconds=5)
+        order = {
+            "strategy":  "tail_yield_engine",
+            "signal_id": 8,
+            "token_ids": ["tok_yes", "tok_no"],
+            "market_id": "m2",
+            "token_id":  "tok_yes",
+        }
+        snapshot = {
+            "market_id":       "m2",
+            "yes_price":       YIELD_MIN_PRICE + 0.01,
+            "hours_to_close":  min(1.0, YIELD_HOURS_TO_EXPIRY / 2),
+            "collected_at":    collected_at,
+            "question":        "will it happen",
+        }
+
+        result = ex._evaluate_reprice(order, snapshot)
+
+        assert result is not None
+        assert result["emitted_at"] == collected_at
+
+    def test_missing_collected_at_leaves_emitted_at_absent(self):
+        # No collected_at on the snapshot → emitted_at stays None → the gate
+        # fail-closed rejects downstream (AC-5), rather than this glue code
+        # inventing a timestamp or silently defaulting to "fresh".
+        from unittest.mock import patch as _patch
+        from execution import executor as ex
+
+        order = {
+            "strategy":  "spread_engine",
+            "signal_id": 9,
+            "token_ids": ["tok_yes", "tok_no"],
+            "market_id": "m3",
+            "token_id":  "tok_yes",
+        }
+        snapshot = {"market_id": "m3", "yes_price": 0.5}
+        fake_signal = {"strategy": "spread_engine", "market_id": "m3", "signal_score": 0.5, "metadata": {}}
+
+        with _patch("agents.spread_engine._analyse_snapshot", return_value=dict(fake_signal)):
+            result = ex._evaluate_reprice(order, snapshot)
+
+        assert result is not None
+        assert result.get("emitted_at") is None

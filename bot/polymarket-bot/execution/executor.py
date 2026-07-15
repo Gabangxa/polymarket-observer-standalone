@@ -102,19 +102,31 @@ def _evaluate_reprice(order: dict, snapshot: dict) -> dict | None:
     Inline re-evaluation for a GTD-expired unfilled order.
     Re-runs strategy logic against the current snapshot.
     Returns a minimal signal dict if edge still exists, None to walk away.
+
+    `emitted_at` on the returned signal is stamped from the driving
+    snapshot's `collected_at` (NOT the original signal's emit time) — a
+    reprice legitimately re-derives edge from a fresh snapshot, so
+    pre_trade_gate.check_reprice()'s freshness gate must measure staleness
+    of *that snapshot*, not the long-expired original signal. If the
+    snapshot has no `collected_at`, `emitted_at` is left absent, which the
+    gate fail-closed rejects (see AC-2/AC-5,
+    docs/specs/PMB-101-102-dependency-pricing-v3.md).
     """
     strategy  = order["strategy"]
     yes_price = snapshot.get("yes_price")
     if yes_price is None:
         return None
 
+    collected_at = snapshot.get("collected_at")
+
     if strategy == "spread_engine":
         from agents.spread_engine import _analyse_snapshot
         result = _analyse_snapshot(snapshot)
         if result is None:
             return None
-        result["id"]        = order.get("signal_id")
-        result["token_ids"] = order.get("token_ids") or [order["token_id"]]
+        result["id"]         = order.get("signal_id")
+        result["token_ids"]  = order.get("token_ids") or [order["token_id"]]
+        result["emitted_at"] = collected_at
         return result
 
     if strategy == "tail_yield_engine":
@@ -130,6 +142,7 @@ def _evaluate_reprice(order: dict, snapshot: dict) -> dict | None:
             "market_id":    order["market_id"],
             "signal_score": round(min(yield_pct / 5.0, 1.0), 4),
             "token_ids":    order.get("token_ids") or [order["token_id"]],
+            "emitted_at":   collected_at,
             "metadata":     {"yes_price": yp, "kelly_fraction": None, "question": snapshot.get("question", "")},
         }
 
