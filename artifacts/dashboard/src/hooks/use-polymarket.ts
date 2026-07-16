@@ -25,9 +25,15 @@ export function useLiveMarkets() {
   });
 }
 
-export function useLiveSnapshots(params?: ListSnapshotsParams) {
+// `executableOnly` is an opt-in server filter (score >= threshold AND strategy
+// in the execution allowlist) that the generated client type doesn't know
+// about. The generated URL builder forwards any param key, so we widen the
+// type and cast at the call boundary rather than regenerating the client.
+export function useLiveSnapshots(
+  params?: ListSnapshotsParams & { executableOnly?: boolean },
+) {
   return useQuery({
-    ...getListSnapshotsQueryOptions(params),
+    ...getListSnapshotsQueryOptions(params as ListSnapshotsParams),
     refetchInterval: POLLING_INTERVAL,
   });
 }
@@ -40,9 +46,11 @@ export function useLiveMarketHistory(marketId: string, params?: GetMarketSnapsho
   });
 }
 
-export function useLiveSignals(params?: ListSignalsParams) {
+export function useLiveSignals(
+  params?: ListSignalsParams & { executableOnly?: boolean },
+) {
   return useQuery({
-    ...getListSignalsQueryOptions(params),
+    ...getListSignalsQueryOptions(params as ListSignalsParams),
     refetchInterval: POLLING_INTERVAL,
   });
 }

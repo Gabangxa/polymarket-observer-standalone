@@ -1,7 +1,12 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { signalsTable, marketsTable, type InsertSignal } from "@workspace/db/schema";
-import { desc, eq, gt, and, sql } from "drizzle-orm";
+import { desc, eq, gt, gte, and, inArray, sql } from "drizzle-orm";
+import {
+  EXECUTION_MIN_SCORE,
+  EXECUTION_STRATEGIES,
+  parseExecutableOnly,
+} from "../lib/execution-criteria";
 
 const router: IRouter = Router();
 
@@ -34,6 +39,10 @@ router.get("/signals", async (req, res) => {
     const marketId = req.query.marketId as string | undefined;
     const hours = Math.min(Number(req.query.hours) || 24, 336);
     const limit = Math.min(Number(req.query.limit) || 100, 500);
+    // executableOnly: restrict to bet-worthy signals (edge bar — see
+    // ../lib/execution-criteria). Applied BEFORE the limit so the page shows
+    // the newest N *qualifying* signals, not the qualifying subset of newest N.
+    const executableOnly = parseExecutableOnly(req.query.executableOnly);
 
     const cutoff = sql`NOW() - ${hours} * INTERVAL '1 hour'`;
 
@@ -43,6 +52,10 @@ router.get("/signals", async (req, res) => {
     }
     if (marketId) {
       conditions.push(eq(signalsTable.marketId, marketId));
+    }
+    if (executableOnly) {
+      conditions.push(gte(signalsTable.signalScore, String(EXECUTION_MIN_SCORE)));
+      conditions.push(inArray(signalsTable.strategy, [...EXECUTION_STRATEGIES]));
     }
 
     const signals = await db

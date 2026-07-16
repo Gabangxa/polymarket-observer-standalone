@@ -6,7 +6,7 @@ import { formatRelativeTime, parseNumeric, formatPrice } from "@/lib/utils";
 import { Link } from "wouter";
 
 export default function Snapshots() {
-  const { data, isLoading } = useLiveSnapshots({ limit: 100 });
+  const { data, isLoading } = useLiveSnapshots({ limit: 100, executableOnly: true });
 
   return (
     <motion.div 
@@ -17,14 +17,14 @@ export default function Snapshots() {
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
         <div>
           <h2 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            <Database className="text-primary" /> Raw Data Feed
+            <Database className="text-primary" /> Live Opportunities
           </h2>
           <p className="text-sm text-muted-foreground font-mono mt-1">
-            Latest point-in-time state across all monitored markets
+            Latest state for markets with a bet-worthy signal (score ≥ 0.75, executable strategies)
           </p>
         </div>
         <div className="text-xs font-mono bg-accent border border-border px-3 py-1.5 rounded text-muted-foreground">
-          Showing latest 100 rows
+          Qualifying markets · latest 100
         </div>
       </div>
 
@@ -47,7 +47,7 @@ export default function Snapshots() {
               ) : !data || data.snapshots.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-4 py-12 text-center text-muted-foreground font-mono">
-                    No snapshot data available.
+                    No markets currently meet the bet criteria.
                   </td>
                 </tr>
               ) : (

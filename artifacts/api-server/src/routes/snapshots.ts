@@ -1,13 +1,33 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { snapshotsTable, marketsTable, type InsertSnapshot } from "@workspace/db/schema";
-import { desc, eq } from "drizzle-orm";
+import { snapshotsTable, marketsTable, signalsTable, type InsertSnapshot } from "@workspace/db/schema";
+import { desc, eq, and, gte, gt, inArray, sql } from "drizzle-orm";
+import {
+  EXECUTION_MIN_SCORE,
+  EXECUTION_STRATEGIES,
+  parseExecutableOnly,
+} from "../lib/execution-criteria";
 
 const router: IRouter = Router();
 
 router.get("/snapshots", async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 100, 500);
+    // executableOnly: keep only the latest snapshot for markets that currently
+    // have a bet-worthy signal (edge bar — see ../lib/execution-criteria),
+    // turning the raw feed into an opportunity-backed view.
+    const executableOnly = parseExecutableOnly(req.query.executableOnly);
+
+    const qualifyingMarketIds = db
+      .selectDistinct({ marketId: signalsTable.marketId })
+      .from(signalsTable)
+      .where(
+        and(
+          gt(signalsTable.emittedAt, sql`NOW() - INTERVAL '7 days'`),
+          gte(signalsTable.signalScore, String(EXECUTION_MIN_SCORE)),
+          inArray(signalsTable.strategy, [...EXECUTION_STRATEGIES]),
+        ),
+      );
 
     const snapshots = await db
       .selectDistinctOn([snapshotsTable.marketId], {
@@ -33,6 +53,11 @@ router.get("/snapshots", async (req, res) => {
       })
       .from(snapshotsTable)
       .innerJoin(marketsTable, eq(snapshotsTable.marketId, marketsTable.marketId))
+      .where(
+        executableOnly
+          ? inArray(snapshotsTable.marketId, qualifyingMarketIds)
+          : undefined,
+      )
       .orderBy(snapshotsTable.marketId, desc(snapshotsTable.collectedAt))
       .limit(limit);
 

@@ -11,18 +11,17 @@ export default function Signals() {
   const { data, isLoading } = useLiveSignals({
     limit: 200,
     hours: 168,
-    strategy: strategyFilter || undefined
+    strategy: strategyFilter || undefined,
+    executableOnly: true,
   });
 
+  // Only the executable strategies can clear the bet bar, so the filter is
+  // scoped to them. Values MUST match the `strategy` strings emitted by the
+  // engines (bot/agents/*_engine.py), not display slugs.
   const strategies: { value: string; label: string }[] = [
-    { value: "",                   label: "ALL" },
-    { value: "spread_harvesting",  label: "Spread" },
-    { value: "neg_risk_overround", label: "Neg Risk" },
-    { value: "mean_reversion",     label: "Reversion" },
-    { value: "odds_shift",         label: "Odds Shift" },
-    { value: "micro_spread_scalp", label: "Micro Spread" },
-    { value: "tail_yield_harvest", label: "Tail Yield" },
-    { value: "binary_arb",         label: "Binary Arb" },
+    { value: "",                  label: "ALL" },
+    { value: "spread_engine",     label: "Spread" },
+    { value: "tail_yield_engine", label: "Tail Yield" },
   ];
 
   return (
@@ -37,7 +36,7 @@ export default function Signals() {
             <Zap className="text-primary" /> Strategy Signals
           </h2>
           <p className="text-sm text-muted-foreground font-mono mt-1">
-            Algorithmic trade opportunities from the last 7 days
+            Bet-worthy opportunities (score ≥ 0.75, executable strategies) · last 7 days
           </p>
         </div>
         
@@ -80,7 +79,7 @@ export default function Signals() {
                   <td colSpan={7} className="px-4 py-12 text-center text-muted-foreground font-mono">
                     <div className="flex flex-col items-center gap-2">
                       <Filter size={24} className="opacity-20" />
-                      No signals match the current filter.
+                      No signals meet the bet criteria for this filter.
                     </div>
                   </td>
                 </tr>
