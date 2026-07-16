@@ -1,0 +1,50 @@
+# docker-compose.monitor.yml — observer dashboard + API, nothing else.
+#
+# This is a READ-ONLY view onto the polymarket-bot-local Postgres. It does NOT
+# run its own db / migrate / bot: it attaches to the bot-local Docker network
+# and reads the same database the trading bot writes. For a self-contained
+# stack with its own Postgres, use docker-compose.yml instead.
+#
+# Bring up / rebuild (one command, run from the repo root):
+#   docker compose -f docker-compose.monitor.yml --env-file .env.monitor up -d --build
+#
+# Prereq: the external network must already exist (created by the bot-local
+# stack). Verify with:  docker network inspect polymarket-bot-local_default
+#
+# The dashboard's nginx proxies /api -> http://api:8080, which resolves via the
+# `api` service-name alias Compose adds on the shared network. Do not rename the
+# api service without updating API_SERVER_URL.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
+      PORT: 8080
+      NODE_ENV: production
+    ports:
+      - "${API_PORT:-8080}:8080"
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    restart: unless-stopped
+    environment:
+      API_SERVER_URL: ${API_SERVER_URL:-http://api:8080}
+      PORT: 80
+    ports:
+      - "${DASHBOARD_PORT:-3000}:80"
+    depends_on:
+      - api
+
+# Attach to the existing bot-local network instead of creating our own, so the
+# api can reach the bot-local Postgres by container name.
+networks:
+  default:
+    name: ${MONITOR_NETWORK:-polymarket-bot-local_default}
+    external: true
